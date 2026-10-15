@@ -1,0 +1,30 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+coverage/
+*.log
+
+# Local data — never commit user indexes or databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tauri generated
+src-tauri/gen/schemas/
+src-tauri/target/
+
+# Benchmarks output
+benchmarks/results/*.json
+!benchmarks/results/.gitkeep

@@ -1,0 +1,31 @@
+[package]
+name = "disknido-core"
+description = "DiskNido storage analysis engine: scanning, exact duplicates, backups, verified archives."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+blake3 = "1.8.7"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs", "chrono"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_UI_Shell",
+  "Win32_System_SystemServices",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
