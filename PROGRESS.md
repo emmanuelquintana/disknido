@@ -14,7 +14,7 @@ Real state of the project. Updated 2026-10-14.
 | 6. Cleanup & images | done | `cleanup.rs`, `images.rs`, `recycle.rs` |
 | 7. Interface | done | 10 screens, es/en, light/dark; 14 frontend tests; E2E run on the real app |
 | 8. Performance & safety | done for 10 k / 100 k; 1 M pending | `docs/PERFORMANCE.md` (duplicates 108 s → 15.7 s on HDD after measured fixes) |
-| 9. Publication | see below | CI/release workflows, docs, installers |
+| 9. Publication | done (draft release) | Public repo, CI green (check + audit), `v0.1.0` draft release with NSIS/MSI + SHA256SUMS built by GitHub Actions |
 
 ## Tests executed (2026-10-14, Windows 11, Rust 1.99, Node 24)
 
@@ -28,6 +28,10 @@ Real state of the project. Updated 2026-10-14.
   organisation of 11 backups + undo, verified ZIP, old folders, history, dark
   theme. Found and fixed: inferred content dates were preselected for
   organisation; grid overflow; card spacing in grids.
+
+## Dependency audit
+
+* CI `cargo audit` found RustSec advisories in `time` 0.3.45 and `quick-xml` 0.38 (transitive, via Tauri); updated to `time` 0.3.55 and `quick-xml` 0.42 (`plist` 1.10.1). MSRV raised to 1.88 (already required by `zip`). `pnpm audit --prod`: no known vulnerabilities.
 
 ## Reviews
 
@@ -50,4 +54,5 @@ See `docs/DECISIONS.md`.
 * Several indexes at once (a new scan replaces the index).
 * Cross-volume verified moves; allocated-size accounting; ARM64; signing.
 * Start-with-Windows and notification settings (not implemented).
-* CI has not run yet on GitHub at the time of writing (see the Actions tab).
+* The `v0.1.0` GitHub Release is a **draft**: install the CI-built setup on a clean Windows PC (see docs/RELEASING.md) before publishing it.
+* A local NSIS build was installed per-user, launched (window "DiskNido", index created) and uninstalled successfully.
