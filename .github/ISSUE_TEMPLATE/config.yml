@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Vulnerabilidad de seguridad / Security issue
+    url: https://github.com/emmanuelquintana/disknido/security/advisories/new
+    about: No abras un issue público; usa un aviso privado. / Please report privately.

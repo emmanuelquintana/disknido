@@ -1,0 +1,14 @@
+name: Propuesta / Feature request
+description: Sugiere una mejora / Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Problema / Problem, description: ¿Qué necesitas resolver? }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Propuesta / Proposal }
+  - type: textarea
+    id: safety
+    attributes: { label: Riesgos para los archivos / Risks to user files, description: ¿Podría causar pérdida de datos? ¿Cómo se evitaría? }

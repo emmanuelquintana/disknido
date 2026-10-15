@@ -1,0 +1,35 @@
+name: Informe de error / Bug report
+description: Algo no funciona como esperabas / Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Antes de enviar:** reemplaza rutas personales (`C:\Users\<tu usuario>\...` → `%USERPROFILE%\...`) y no adjuntes tu `index.sqlite`.
+        **Before submitting:** replace personal paths and do not attach your `index.sqlite`.
+  - type: input
+    id: version
+    attributes: { label: Versión de DiskNido / DiskNido version, placeholder: "0.1.0 (Configuración → Acerca de)" }
+    validations: { required: true }
+  - type: input
+    id: windows
+    attributes: { label: Windows, placeholder: "Windows 11 24H2 x64" }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Pasos para reproducir / Steps to reproduce }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Qué esperabas y qué pasó / Expected vs actual }
+    validations: { required: true }
+  - type: textarea
+    id: error
+    attributes: { label: Mensaje de error (anonimizado) / Error text (anonymised), render: text }
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacidad
+      options:
+        - label: He eliminado rutas y nombres personales / I removed personal paths and names
+          required: true
