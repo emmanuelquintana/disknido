@@ -5,8 +5,11 @@
 //!    and are collapsed — one copy, not duplicates) and a partial
 //!    fingerprint (BLAKE3 of first + last 64 KiB). Filter only.
 //! 3. Full BLAKE3, streamed in 1 MiB chunks, cached by (path, size, mtime, key).
-//! 4. Byte-by-byte comparison inside each hash group. Only groups that pass
-//!    are stored as `verified`. Files that change during the run are dropped.
+//! 4. Groups are stored as "identical content (BLAKE3)". Before any copy is
+//!    removed, it is compared byte by byte with the kept copy
+//!    (`recycle::recycle_duplicates`); a group becomes `verified` once every
+//!    remaining copy has passed that comparison. Files that change during the
+//!    run are dropped.
 //!
 //! Reads are issued in path order with one worker pool per drive, so disks
 //! are read in parallel and an HDD never paces an SSD.
@@ -47,7 +50,7 @@ fn one() -> u64 {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DupProgress {
-    /// grouping | partial | hashing | verifying | saving | done | cancelled
+    /// grouping | partial | hashing | checking | saving | done | cancelled
     pub phase: String,
     pub files_done: u64,
     pub files_total: u64,
@@ -466,46 +469,26 @@ pub fn find_duplicates(
     let mut hash_groups: Vec<((u64, String), Vec<Candidate>)> = hmap.into_iter().filter(|(_, g)| g.len() > 1).collect();
     hash_groups.sort_by(|a, b| a.1[0].path.cmp(&b.1[0].path));
 
-    // Phase 3: byte-by-byte verification, with byte progress for big files.
-    let total = hash_groups.len() as u64;
-    let vbytes_total: u64 = hash_groups.iter().map(|((s, _), g)| s * g.len() as u64).sum();
-    let vbytes = AtomicU64::new(0);
+    // Phase 3 is not run here: equal BLAKE3 is reported as "identical
+    // content", and the byte-by-byte comparison happens right before any copy
+    // is removed (recycle_duplicates), where it is required. This halves the
+    // reading on large duplicate sets. Files that changed meanwhile are dropped.
+    progress("checking", 0, hash_groups.len() as u64, 0, 0);
     let mut verified: Vec<(u64, String, Vec<Candidate>)> = Vec::new();
-    for (i, ((size, hash), group)) in hash_groups.into_iter().enumerate() {
+    for ((size, hash), group) in hash_groups {
         control.checkpoint()?;
-        set_current(&group[0].path);
-        progress("verifying", i as u64, total, vbytes.load(Ordering::Relaxed), vbytes_total);
-        let paths: Vec<PathBuf> = group.iter().map(|c| c.path.clone()).collect();
-        let classes = match split_identical_counted(&paths, control, &|n| {
-            let b = vbytes.fetch_add(n, Ordering::Relaxed) + n;
-            if due() {
-                progress("verifying", i as u64, total, b, vbytes_total);
-            }
-        }) {
-            Ok(c) => c,
-            Err(crate::Error::Cancelled) => return Err(crate::Error::Cancelled),
-            Err(e) => {
-                for p in &paths {
-                    skip(p, format!("No se pudo comparar: {e}"));
+        let members: Vec<Candidate> = group
+            .into_iter()
+            .filter(|c| {
+                let ok = unchanged(c);
+                if !ok {
+                    skip(&c.path, "El archivo cambió durante el análisis".into());
                 }
-                continue;
-            }
-        };
-        for class in classes {
-            let members: Vec<Candidate> = class
-                .into_iter()
-                .map(|i| group[i].clone())
-                .filter(|c| {
-                    let ok = unchanged(c);
-                    if !ok {
-                        skip(&c.path, "El archivo cambió durante el análisis".into());
-                    }
-                    ok
-                })
-                .collect();
-            if members.len() > 1 {
-                verified.push((size, hash.clone(), members));
-            }
+                ok
+            })
+            .collect();
+        if members.len() > 1 {
+            verified.push((size, hash, members));
         }
     }
 
@@ -516,7 +499,7 @@ pub fn find_duplicates(
     let now = crate::now_unix();
     let (mut files, mut redundant) = (0u64, 0u64);
     for (size, hash, members) in &verified {
-        tx.execute("INSERT INTO dup_groups(run_at,size,hash,verified) VALUES(?1,?2,?3,1)", params![now, *size as i64, hash])?;
+        tx.execute("INSERT INTO dup_groups(run_at,size,hash,verified) VALUES(?1,?2,?3,0)", params![now, *size as i64, hash])?;
         let gid = tx.last_insert_rowid();
         for c in members {
             let reason = safety::duplicate_exclusion_reason(&c.path)

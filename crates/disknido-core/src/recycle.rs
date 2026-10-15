@@ -177,7 +177,7 @@ pub fn recycle(
     })
 }
 
-/// Recycles redundant copies of one verified duplicate group. The kept copy
+/// Recycles redundant copies of one duplicate group (identical BLAKE3). The kept copy
 /// must still exist, and every removed copy is compared byte by byte with
 /// it immediately before being recycled.
 pub fn recycle_duplicates(
@@ -187,11 +187,9 @@ pub fn recycle_duplicates(
     remove: &[PathBuf],
     control: &Control,
 ) -> Result<RecycleResult> {
-    let (size, verified): (i64, bool) =
-        conn.query_row("SELECT size, verified FROM dup_groups WHERE id=?1", [group_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    if !verified {
-        return Err(Error::Refused("El grupo no está verificado".into()));
-    }
+    // Groups have identical BLAKE3; the bytes of every removed copy are
+    // compared with the kept copy below, right before it is recycled.
+    let size: i64 = conn.query_row("SELECT size FROM dup_groups WHERE id=?1", [group_id], |r| r.get(0))?;
     let mut st = conn.prepare("SELECT path, mtime, protected_reason FROM dup_files WHERE group_id=?1")?;
     let files: Vec<(String, i64, Option<String>)> =
         st.query_map([group_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;

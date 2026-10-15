@@ -214,6 +214,37 @@ fn diag_dups(db: &Path, min_size: u64) {
     );
 }
 
+fn readtest(dir: &Path, threads: usize) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_dir() { stack.push(e.path()) } else { files.push(e.path()) }
+        }
+    }
+    files.sort();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let t = Instant::now();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(p) = files.get(i) else { break };
+                    let mut f = std::fs::File::open(p).unwrap();
+                    let _ = f.read(&mut buf);
+                    let _ = f.seek(SeekFrom::End(-1024)).map(|_| f.read(&mut buf));
+                }
+            });
+        }
+    });
+    let secs = t.elapsed().as_secs_f64();
+    println!("files={} threads={threads} secs={secs:.1} files_per_sec={:.0}", files.len(), files.len() as f64 / secs);
+}
+
 fn diag_queries(db: &Path) {
     let conn = db::open(db).unwrap();
     let n: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0)).unwrap();
@@ -260,6 +291,8 @@ fn main() {
         }
         // bench dups <db> <min_size> : duplicate search with phase timings
         "dups" => diag_dups(&dir, args.get(3).and_then(|n| n.parse().ok()).unwrap_or(1 << 20)),
+        // bench readtest <dir> <threads> : open + read head/tail of every file (cold-cache I/O test)
+        "readtest" => readtest(&dir, args.get(3).and_then(|n| n.parse().ok()).unwrap_or(1)),
         // bench queries <db> : time the UI queries over an existing index
         "queries" => diag_queries(&dir),
         other => panic!("unknown command {other}"),

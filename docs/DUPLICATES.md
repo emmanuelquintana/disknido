@@ -3,23 +3,29 @@
 Source: `crates/disknido-core/src/duplicates.rs`, `recycle.rs`.
 Tests: `crates/disknido-core/tests/duplicates.rs`.
 
-DiskNido only reports files whose **content is byte-for-byte identical**.
-Names, dates and extensions are never used as evidence.
+DiskNido only reports files whose **whole content** is identical. Names,
+dates and extensions are never used as evidence. Removal of a copy always
+requires a byte-by-byte comparison with the copy you keep.
 
 ## Pipeline
 
 | Phase | What happens | Can it declare duplicates? |
 | --- | --- | --- |
 | 1. Size | Files from the index grouped by size; unique sizes dropped. Empty files and cloud-only files are skipped. | No |
-| 2. Identity | Each candidate is opened once; `GetFileInformationByHandle` gives (volume serial, file index). Paths sharing it are **hard links to the same data** — one copy, not duplicates. Unreadable/locked files are excluded and listed. | No |
-| 3. Partial fingerprint | BLAKE3 of the first and last 64 KiB. Different → not duplicates. Equal → still unknown. | **No — filter only** |
-| 4. Full BLAKE3 | Whole content streamed in 1 MiB chunks (never loaded into RAM). Cached by `(path, size, mtime, file_key)`; any mismatch invalidates the entry. | No |
-| 5. Byte-by-byte | Inside each BLAKE3 group every file is compared with a representative, chunk by chunk; groups split on any difference. Size and mtime are re-checked afterwards; files that changed are dropped. | **Yes — only here** |
+| 2. Identity + partial fingerprint | Each candidate is opened **once**: `GetFileInformationByHandle` gives (volume serial, file index) — paths sharing it are **hard links to the same data**, one copy, not duplicates — and BLAKE3 of the first and last 64 KiB is computed from the same handle. Unreadable/locked files are excluded and listed. | **No — filter only** |
+| 3. Full BLAKE3 | Whole content streamed in 1 MiB chunks (never loaded into RAM); files ≤ 128 KiB were already read completely in phase 2. Cached by `(path, size, mtime, file_key)`; any mismatch invalidates the entry. Size and mtime are re-checked at the end; files that changed are dropped. | Shown as **"Contenido idéntico"** |
+| 4. Byte-by-byte | Right before a copy is sent to the Recycle Bin it is compared, chunk by chunk, with the copy you keep. Any difference refuses the removal. | **Required for every removal** |
 
-Only groups that pass phase 5 are stored, with `verified = 1`, and only those
-are shown with the "Duplicado verificado" label.
+Why phase 4 runs at removal time: on real drives the full-hash phase can read
+hundreds of GB (285 GB on the developer's 4.4 TB test set); comparing all of
+it byte by byte during the search doubled that reading for groups the user
+may never act on. The guarantee that matters — never removing a copy that is
+not byte-identical to the kept one — is enforced where the removal happens.
 
-The test `only_byte_identical_files_are_grouped` builds two files whose first
+Reads are issued in path order with one worker pool per drive: disks are read
+in parallel, an HDD never paces an SSD, and the UI shows the file being read.
+
+The test `only_identical_files_are_grouped` builds two files whose first
 and last 64 KiB are identical but differ in the middle, asserts that their
 partial fingerprints collide, and asserts they are **not** reported.
 
@@ -27,12 +33,12 @@ partial fingerprints collide, and asserts they are **not** reported.
 
 `recycle_duplicates(group, keep, remove[])` refuses unless:
 
-* the group is verified and every path belongs to it;
+* every path belongs to the group;
 * the kept copy still exists with the recorded size and mtime;
 * each removed copy is not the kept one, is not protected, still has the
   recorded size and mtime, is not behind a junction, and is not cloud-only;
 * at least one copy remains;
-* **each removed copy is compared byte-by-byte with the kept copy again,
+* **each removed copy is compared byte-by-byte with the kept copy,
   immediately before** it is sent to the Recycle Bin.
 
 Anything stale is skipped and reported. Nothing is deleted permanently.

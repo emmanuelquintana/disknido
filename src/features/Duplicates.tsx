@@ -54,9 +54,13 @@ export function GroupCard({ g, onDone }: { g: DupGroup; onDone: () => void }) {
           <span className="muted num">· {t("dup.each", { size: formatBytes(g.size, lang) })}</span>
           <span className="muted num">· {t("dup.redundant", { size: formatBytes(g.redundantBytes, lang) })}</span>
         </div>
-        {g.verified && (
+        {g.verified ? (
           <Badge tone="success" title={t("dup.verifiedDesc")}>
             <ShieldCheck size={14} aria-hidden /> {t("dup.verified")}
+          </Badge>
+        ) : (
+          <Badge tone="accent" title={t("dup.identicalDesc")}>
+            <ShieldCheck size={14} aria-hidden /> {t("dup.identical")}
           </Badge>
         )}
       </div>

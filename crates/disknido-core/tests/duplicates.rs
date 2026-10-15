@@ -21,7 +21,7 @@ fn names(groups: &[duplicates::DupGroup], root: &Path) -> BTreeSet<Vec<String>> 
 }
 
 #[test]
-fn only_byte_identical_files_are_grouped() {
+fn only_identical_files_are_grouped() {
     let tmp = fixture_root();
     let d = tmp.path().join("data");
     // 1. different names, same content
@@ -68,7 +68,7 @@ fn only_byte_identical_files_are_grouped() {
     let sum = duplicates::find_duplicates(&dbp, &req, &Control::default(), &|_| {}).unwrap();
     let conn = db::open(&dbp).unwrap();
     let (groups, _) = duplicates::list_groups(&conn, 0, 100).unwrap();
-    assert!(groups.iter().all(|g| g.verified));
+    assert!(groups.iter().all(|g| !g.verified), "byte verification happens before removal, not during the search");
     let got = names(&groups, &d);
     let hl_group: Vec<String> =
         groups.iter().flat_map(|g| g.files.iter()).map(|f| f.path.replace('\\', "/")).filter(|p| p.contains("/hl/")).collect();
@@ -104,7 +104,7 @@ fn files_changing_or_locked_are_excluded() {
     let target = d.join("chg/b.bin");
     let req = DupRequest { min_size: 1, scopes: vec![], profile: Default::default() };
     let sum = duplicates::find_duplicates(&dbp, &req, &Control::default(), &|p| {
-        if p.phase == "verifying" && !changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if p.phase == "checking" && !changed.swap(true, std::sync::atomic::Ordering::SeqCst) {
             let mut other = a.clone();
             other[100] ^= 1;
             std::fs::write(&target, &other).unwrap();
