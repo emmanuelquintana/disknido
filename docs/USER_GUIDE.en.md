@@ -71,6 +71,13 @@ size; mark important, favorite, ignore, always exclude, compress, or find
 duplicates inside. Windows does not reliably record "last used", so the newest
 modification is used.
 
+## Archive catalog
+Every ZIP DiskNido creates stores here the list of what is inside and where
+the ZIP is. Type in the search box (case and accents ignored) to find which
+ZIP holds a file, without opening anything. Add ZIPs you already had, browse
+each one, export its list as CSV, or remove it from the catalog (the ZIP is
+not touched).
+
 ## 9. History
 Every operation with date, duration, result, items, errors, free space before
 and after when measurable, and whether it can be undone.

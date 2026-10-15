@@ -53,6 +53,7 @@ export function HomePage() {
   const vols = useAsync(() => api.listVolumes(), [indexVersion]);
   const scanning = isRunning(latest("scan"));
   const ov = useAsync(() => (scanning ? Promise.resolve(null) : api.overview(settings.rootName)), [indexVersion, scanning, settings.rootName]);
+  const fd = useAsync(() => (scanning ? Promise.resolve(null) : api.findings(settings.rootName)), [indexVersion, scanning, settings.rootName]);
   const last = ov.data?.lastScan;
   // Drives can come from different scans: use each drive's latest indexed root.
   const scannedAt = new Map<string, number>();
@@ -111,9 +112,9 @@ export function HomePage() {
             </p>
             <div className="grid grid-stats">
               <SummaryCard icon={<Copy size={18} />} label={t("home.recoverable")} value={formatBytes(ov.data.duplicateBytes, lang)} sub={`${formatNumber(ov.data.duplicateGroups, lang)} · ${t("home.duplicates")}`} onClick={() => navigate("duplicates")} />
-              <SummaryCard icon={<Archive size={18} />} label={t("home.backups")} value={formatNumber(ov.data.backups, lang)} sub={formatBytes(ov.data.backupBytes, lang)} onClick={() => navigate("backups")} />
-              <SummaryCard icon={<Disc3 size={18} />} label={t("home.images")} value={formatNumber(ov.data.images, lang)} sub={formatBytes(ov.data.imageBytes, lang)} onClick={() => navigate("images")} />
-              <SummaryCard icon={<FolderClock size={18} />} label={t("home.oldFolders")} value={formatNumber(ov.data.oldFolders, lang)} sub={formatBytes(ov.data.oldFolderBytes, lang)} onClick={() => navigate("oldFolders")} />
+              <SummaryCard icon={<Archive size={18} />} label={t("home.backups")} value={fd.data ? formatNumber(fd.data.backups, lang) : "…"} sub={fd.data ? formatBytes(fd.data.backupBytes, lang) : t("common.loading")} onClick={() => navigate("backups")} />
+              <SummaryCard icon={<Disc3 size={18} />} label={t("home.images")} value={fd.data ? formatNumber(fd.data.images, lang) : "…"} sub={fd.data ? formatBytes(fd.data.imageBytes, lang) : t("common.loading")} onClick={() => navigate("images")} />
+              <SummaryCard icon={<FolderClock size={18} />} label={t("home.oldFolders")} value={fd.data ? formatNumber(fd.data.oldFolders, lang) : "…"} sub={fd.data ? formatBytes(fd.data.oldFolderBytes, lang) : t("common.loading")} onClick={() => navigate("oldFolders")} />
               <SummaryCard icon={<Trash2 size={18} />} label={t("home.recycleBin")} value={formatBytes(ov.data.recycleBin.bytes, lang)} sub={t("common.items", { n: formatNumber(ov.data.recycleBin.items, lang) })} onClick={() => navigate("cleanup")} />
             </div>
           </>

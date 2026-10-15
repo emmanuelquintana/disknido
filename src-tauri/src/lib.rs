@@ -4,7 +4,8 @@
 
 use disknido_core::rusqlite::Connection;
 use disknido_core::{
-    Control, Error, backups, cleanup, compress, db, duplicates, images, ops, organize, query, recycle, safety, scan, volumes,
+    Control, Error, backups, catalog, cleanup, compress, db, duplicates, images, ops, organize, query, recycle, safety, scan,
+    volumes,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -88,6 +89,21 @@ fn spawn_task<R: Serialize + Send + 'static>(
     id
 }
 
+/// Runs `f` on a blocking thread with its own SQLite connection, so a slow
+/// query on one screen never blocks the others (WAL allows concurrent readers).
+async fn with_db<T: Send + 'static>(
+    state: &AppState,
+    f: impl FnOnce(&Connection) -> CmdResult<T> + Send + 'static,
+) -> CmdResult<T> {
+    let path = state.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&path)?;
+        f(&conn)
+    })
+    .await
+    .map_err(|e| Error::Other(e.to_string()))?
+}
+
 fn ensure_index_idle(state: &AppState) -> CmdResult<()> {
     if state.scanning.load(Ordering::SeqCst) {
         return Err(Error::Refused("Hay un análisis en curso; espera a que termine".into()));
@@ -141,38 +157,58 @@ struct Overview {
     extensions: Vec<query::Bucket>,
     duplicate_groups: u64,
     duplicate_bytes: u64,
+    recycle_bin: recycle::BinInfo,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Findings {
     backups: usize,
     backup_bytes: u64,
     images: usize,
     image_bytes: u64,
     old_folders: usize,
     old_folder_bytes: u64,
-    recycle_bin: recycle::BinInfo,
 }
 
 #[tauri::command]
 async fn overview(state: State<'_, AppState>, root_name: String) -> CmdResult<Overview> {
     ensure_index_idle(&state)?;
-    let conn = state.conn();
-    let (duplicate_groups, duplicate_bytes) = duplicates::totals(&conn)?;
-    let b = backups::list(&conn, &root_name)?;
-    let im = images::list(&conn, false)?;
-    let old = query::old_folders(&conn, 12, 100 * 1024 * 1024, 100_000, false)?;
-    Ok(Overview {
-        last_scan: query::last_scan(&conn)?,
-        roots: query::indexed_roots(&conn)?,
-        categories: query::categories(&conn)?,
-        extensions: query::extensions(&conn, 12)?,
-        duplicate_groups,
-        duplicate_bytes,
-        backups: b.len(),
-        backup_bytes: b.iter().map(|x| x.size).sum(),
-        images: im.len(),
-        image_bytes: im.iter().map(|x| x.size).sum(),
-        old_folders: old.len(),
-        old_folder_bytes: old.iter().map(|x| x.entry.size).sum(),
-        recycle_bin: recycle::bin_info(),
+    let _ = root_name;
+    with_db(&state, |conn| {
+        let (duplicate_groups, duplicate_bytes) = duplicates::totals(conn)?;
+        Ok(Overview {
+            last_scan: query::last_scan(conn)?,
+            roots: query::indexed_roots(conn)?,
+            categories: query::categories(conn)?,
+            extensions: query::extensions(conn, 12)?,
+            duplicate_groups,
+            duplicate_bytes,
+            recycle_bin: recycle::bin_info(),
+        })
     })
+    .await
+}
+
+/// Counts for the Home summary that need a pass over folders; separate so
+/// Home renders immediately and these fill in when ready.
+#[tauri::command]
+async fn findings(state: State<'_, AppState>, root_name: String) -> CmdResult<Findings> {
+    ensure_index_idle(&state)?;
+    with_db(&state, move |conn| {
+        let b = backups::list(conn, &root_name)?;
+        let im = images::list(conn, false)?;
+        let old = query::old_folders(conn, 12, 100 * 1024 * 1024, 100_000, false)?;
+        Ok(Findings {
+            backups: b.len(),
+            backup_bytes: b.iter().map(|x| x.size).sum(),
+            images: im.len(),
+            image_bytes: im.iter().map(|x| x.size).sum(),
+            old_folders: old.iter().filter(|o| o.app_reason.is_none()).count(),
+            old_folder_bytes: old.iter().filter(|o| o.app_reason.is_none()).map(|x| x.entry.size).sum(),
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -183,14 +219,16 @@ async fn children(
     limit: i64,
 ) -> CmdResult<(Vec<query::EntryView>, i64)> {
     ensure_index_idle(&state)?;
-    query::children(&state.conn(), parent_id, offset.max(0), limit.clamp(1, 2000))
+    with_db(&state, move |c| query::children(c, parent_id, offset.max(0), limit.clamp(1, 2000))).await
 }
 
 #[tauri::command]
 async fn largest(state: State<'_, AppState>, limit: i64) -> CmdResult<(Vec<query::EntryView>, Vec<query::EntryView>)> {
     ensure_index_idle(&state)?;
-    let conn = state.conn();
-    Ok((query::largest_files(&conn, limit.clamp(1, 1000))?, query::largest_folders(&conn, limit.clamp(1, 1000))?))
+    with_db(&state, move |c| {
+        Ok((query::largest_files(c, limit.clamp(1, 1000))?, query::largest_folders(c, limit.clamp(1, 1000))?))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -199,24 +237,24 @@ async fn search(state: State<'_, AppState>, needle: String, limit: i64) -> CmdRe
     if needle.trim().len() < 2 {
         return Ok(Vec::new());
     }
-    query::search(&state.conn(), needle.trim(), limit.clamp(1, 500))
+    with_db(&state, move |c| query::search(c, needle.trim(), limit.clamp(1, 500))).await
 }
 
 #[tauri::command]
 async fn subtree_extensions(state: State<'_, AppState>, id: i64) -> CmdResult<Vec<query::Bucket>> {
     ensure_index_idle(&state)?;
-    query::subtree_extensions(&state.conn(), id, 8)
+    with_db(&state, move |c| query::subtree_extensions(c, id, 8)).await
 }
 
 #[tauri::command]
 async fn scan_errors(state: State<'_, AppState>, scan_id: i64) -> CmdResult<Vec<query::ScanError>> {
-    query::scan_errors(&state.conn(), scan_id, 500)
+    with_db(&state, move |c| query::scan_errors(c, scan_id, 500)).await
 }
 
 #[tauri::command]
 async fn old_folders(state: State<'_, AppState>, months: i64, min_bytes: u64) -> CmdResult<Vec<query::OldFolder>> {
     ensure_index_idle(&state)?;
-    query::old_folders(&state.conn(), months.clamp(1, 600), min_bytes, 500, true)
+    with_db(&state, move |c| query::old_folders(c, months.clamp(1, 600), min_bytes, 500, true)).await
 }
 
 #[tauri::command]
@@ -243,7 +281,7 @@ fn start_duplicates(app: AppHandle, state: State<AppState>, request: duplicates:
 
 #[tauri::command]
 async fn duplicate_groups(state: State<'_, AppState>, offset: i64, limit: i64) -> CmdResult<(Vec<duplicates::DupGroup>, i64)> {
-    duplicates::list_groups(&state.conn(), offset.max(0), limit.clamp(1, 500))
+    with_db(&state, move |c| duplicates::list_groups(c, offset.max(0), limit.clamp(1, 500))).await
 }
 
 #[tauri::command]
@@ -253,8 +291,7 @@ async fn recycle_duplicates(
     keep: PathBuf,
     remove: Vec<PathBuf>,
 ) -> CmdResult<recycle::RecycleResult> {
-    let conn = state.conn();
-    recycle::recycle_duplicates(&conn, group_id, &keep, &remove, &Control::default())
+    with_db(&state, move |c| recycle::recycle_duplicates(c, group_id, &keep, &remove, &Control::default())).await
 }
 
 fn check_export_path(path: &std::path::Path) -> CmdResult<()> {
@@ -268,9 +305,11 @@ fn check_export_path(path: &std::path::Path) -> CmdResult<()> {
 #[tauri::command]
 async fn export_duplicates(state: State<'_, AppState>, path: PathBuf, anonymize: bool) -> CmdResult<()> {
     check_export_path(&path)?;
-    let csv = duplicates::export_csv(&state.conn(), anonymize)?;
-    std::fs::write(&path, csv)?;
-    Ok(())
+    with_db(&state, move |c| {
+        std::fs::write(&path, duplicates::export_csv(c, anonymize)?)?;
+        Ok(())
+    })
+    .await
 }
 
 // ---------- disk images ----------
@@ -278,13 +317,12 @@ async fn export_duplicates(state: State<'_, AppState>, path: PathBuf, anonymize:
 #[tauri::command]
 async fn disk_images(state: State<'_, AppState>, read_headers: bool) -> CmdResult<Vec<images::DiskImage>> {
     ensure_index_idle(&state)?;
-    images::list(&state.conn(), read_headers)
+    with_db(&state, move |c| images::list(c, read_headers)).await
 }
 
 #[tauri::command]
 async fn image_orphans(state: State<'_, AppState>, selection: Vec<PathBuf>) -> CmdResult<Vec<String>> {
-    let all = images::list(&state.conn(), false)?;
-    Ok(images::orphaned_by(&selection, &all))
+    with_db(&state, move |c| Ok(images::orphaned_by(&selection, &images::list(c, false)?))).await
 }
 
 #[tauri::command]
@@ -295,7 +333,7 @@ async fn recycle_images(state: State<'_, AppState>, targets: Vec<recycle::Recycl
             return Err(Error::Refused(format!("{} no es una imagen de disco", t.path.display())));
         }
     }
-    recycle::recycle(&state.conn(), "images", &targets, false, &Control::default(), &|_| Ok(()))
+    with_db(&state, move |c| recycle::recycle(c, "images", &targets, false, &Control::default(), &|_| Ok(()))).await
 }
 
 // ---------- backups ----------
@@ -303,7 +341,7 @@ async fn recycle_images(state: State<'_, AppState>, targets: Vec<recycle::Recycl
 #[tauri::command]
 async fn backups_list(state: State<'_, AppState>, root_name: String) -> CmdResult<Vec<backups::BackupItem>> {
     ensure_index_idle(&state)?;
-    backups::list(&state.conn(), &root_name)
+    with_db(&state, move |c| backups::list(c, &root_name)).await
 }
 
 #[tauri::command]
@@ -330,7 +368,7 @@ fn organize_execute(app: AppHandle, state: State<AppState>, items: Vec<organize:
 
 #[tauri::command]
 async fn organize_undo(state: State<'_, AppState>, op_id: i64) -> CmdResult<organize::ExecResult> {
-    organize::undo(&state.conn(), op_id, &Control::default())
+    with_db(&state, move |c| organize::undo(c, op_id, &Control::default())).await
 }
 
 // ---------- compression ----------
@@ -351,6 +389,47 @@ fn start_compress(app: AppHandle, state: State<AppState>, request: compress::Com
     }))
 }
 
+// ---------- archive catalog ----------
+
+#[tauri::command]
+async fn catalog_list(state: State<'_, AppState>) -> CmdResult<Vec<catalog::ArchiveInfo>> {
+    with_db(&state, catalog::list).await
+}
+
+#[tauri::command]
+async fn catalog_search(state: State<'_, AppState>, needle: String) -> CmdResult<Vec<catalog::Hit>> {
+    if needle.trim().chars().count() < 2 {
+        return Ok(Vec::new());
+    }
+    with_db(&state, move |c| catalog::search(c, needle.trim(), 500)).await
+}
+
+#[tauri::command]
+async fn catalog_entries(state: State<'_, AppState>, id: i64, offset: i64, limit: i64) -> CmdResult<Vec<catalog::Hit>> {
+    with_db(&state, move |c| catalog::entries(c, id, offset.max(0), limit.clamp(1, 2000))).await
+}
+
+/// Adds existing ZIP files; each result is the archive or a per-file error.
+#[tauri::command]
+async fn catalog_import(state: State<'_, AppState>, paths: Vec<PathBuf>) -> CmdResult<Vec<Result<catalog::ArchiveInfo, String>>> {
+    with_db(&state, move |c| Ok(paths.iter().map(|p| catalog::import_zip(c, p).map_err(|e| e.to_string())).collect())).await
+}
+
+#[tauri::command]
+async fn catalog_forget(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    with_db(&state, move |c| catalog::forget(c, id)).await
+}
+
+#[tauri::command]
+async fn catalog_export(state: State<'_, AppState>, id: i64, path: PathBuf) -> CmdResult<()> {
+    check_export_path(&path)?;
+    with_db(&state, move |c| {
+        std::fs::write(&path, catalog::export_csv(c, id)?)?;
+        Ok(())
+    })
+    .await
+}
+
 // ---------- cleanup ----------
 
 #[tauri::command]
@@ -364,19 +443,19 @@ async fn cleanup_analyze() -> CmdResult<Vec<cleanup::CleanupCategory>> {
 async fn cleanup_recycle(state: State<'_, AppState>, rule_id: String, paths: Vec<PathBuf>) -> CmdResult<recycle::RecycleResult> {
     let targets = cleanup::check_rule_paths(&rule_id, &paths)?;
     let appdata = cleanup::rule_allows_appdata(&rule_id);
-    recycle::recycle(&state.conn(), &rule_id, &targets, appdata, &Control::default(), &|_| Ok(()))
+    with_db(&state, move |c| recycle::recycle(c, &rule_id, &targets, appdata, &Control::default(), &|_| Ok(()))).await
 }
 
 #[tauri::command]
 async fn empty_recycle_bin(state: State<'_, AppState>) -> CmdResult<recycle::BinInfo> {
-    recycle::empty_bin(&state.conn())
+    with_db(&state, recycle::empty_bin).await
 }
 
 // ---------- history, settings, misc ----------
 
 #[tauri::command]
 async fn history(state: State<'_, AppState>, limit: i64) -> CmdResult<Vec<ops::Operation>> {
-    ops::history(&state.conn(), limit.clamp(1, 500))
+    with_db(&state, move |c| ops::history(c, limit.clamp(1, 500))).await
 }
 
 #[tauri::command]
@@ -464,6 +543,13 @@ pub fn run() {
             list_volumes,
             start_scan,
             overview,
+            findings,
+            catalog_list,
+            catalog_search,
+            catalog_entries,
+            catalog_import,
+            catalog_forget,
+            catalog_export,
             children,
             largest,
             search,

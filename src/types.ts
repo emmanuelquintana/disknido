@@ -29,7 +29,7 @@ export interface ScanRequest {
 
 export interface ScanProgress {
   scanId: number;
-  phase: "enumerating" | "aggregating" | "done" | "cancelled";
+  phase: "enumerating" | "aggregating" | "indexing" | "done" | "cancelled";
   root: string;
   current: string;
   files: number;
@@ -92,13 +92,39 @@ export interface Overview {
   extensions: Bucket[];
   duplicateGroups: number;
   duplicateBytes: number;
+  recycleBin: BinInfo;
+}
+
+export interface Findings {
   backups: number;
   backupBytes: number;
   images: number;
   imageBytes: number;
   oldFolders: number;
   oldFolderBytes: number;
-  recycleBin: BinInfo;
+}
+
+export interface ArchiveInfo {
+  id: number;
+  path: string;
+  source: string | null;
+  origin: "created" | "imported";
+  createdAt: number;
+  files: number;
+  bytes: number;
+  archiveBytes: number;
+  verified: boolean;
+  exists: boolean;
+}
+
+export interface CatalogHit {
+  archiveId: number;
+  archivePath: string;
+  relPath: string;
+  name: string;
+  size: number;
+  mtime: number | null;
+  blake3: string | null;
 }
 
 export interface OldFolder {
@@ -108,6 +134,7 @@ export interface OldFolder {
   topExtensions: Bucket[];
   protectedReason: string | null;
   mark: string | null;
+  appReason: string | null;
 }
 
 export interface DupProgress {
@@ -117,6 +144,7 @@ export interface DupProgress {
   bytesDone: number;
   bytesTotal: number;
   elapsedMs: number;
+  current: string;
 }
 
 export interface DupSummary {
@@ -282,6 +310,7 @@ export interface CompressResult {
   potentialSaving: number;
   verified: boolean;
   notPreserved: string[];
+  catalogId: number;
 }
 
 export type CleanupConfidence = "high" | "medium" | "manual" | "protected";

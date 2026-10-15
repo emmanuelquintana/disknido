@@ -27,6 +27,7 @@ organiza los respaldos por unidad, año y mes, y los comprime en ZIP
 | **Duplicados exactos** | Tamaño → enlaces físicos → huella parcial BLAKE3 → BLAKE3 completo → **byte a byte**. Se vuelve a verificar justo antes de enviar una copia a la Papelera. Las copias dentro de respaldos están protegidas. |
 | **Imágenes de disco** | ISO, BIN/CUE, MDF/MDS, CHD, RVZ, WBFS, WUD/WUX, CSO, GDI… Conjuntos CUE/GDI, etiquetas ISO 9660 y avisos de archivos huérfanos. |
 | **Respaldos por unidad, año y mes** | Detecta `Backup Enero 2025`, `BACKUP_2024_08`, `bk-02-2025`, `Respaldo Laptop 2023-11`…; marca fechas ambiguas; plan previo con el árbol resultante; movimientos atómicos dentro de la unidad; verificación; deshacer. |
+| **Catálogo de comprimidos** | Cada ZIP verificado guarda una lista buscable de su contenido y su ubicación; también puedes añadir ZIP existentes. Búsqueda sin distinguir mayúsculas ni acentos. |
 | **Compresión verificada** | ZIP (Deflate/ZIP64) que se vuelve a abrir y se compara archivo por archivo con los originales (BLAKE3). Los originales siempre se conservan. Cuentas de espacio honestas. |
 
 | Duplicados | Plan de respaldos | ZIP verificado |

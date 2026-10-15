@@ -14,6 +14,7 @@ export type Section =
   | "images"
   | "backups"
   | "oldFolders"
+  | "catalog"
   | "history"
   | "settings";
 
@@ -29,6 +30,8 @@ export interface Settings {
   backupParents: Record<string, string>;
   compressionLevel: number;
   anonymizeReports: boolean;
+  showInstalledApps: boolean;
+  settingsVersion: number;
 }
 
 export const defaultSettings: Settings = {
@@ -37,13 +40,26 @@ export const defaultSettings: Settings = {
   profile: "balanced",
   includeHidden: true,
   exclusions: [],
-  dupMinSize: 1024,
+  dupMinSize: 1024 * 1024,
   rootName: "Backups",
   layout: "yearMonth",
   backupParents: {},
   compressionLevel: 6,
   anonymizeReports: true,
+  showInstalledApps: false,
+  settingsVersion: 2,
 };
+
+/** Older saved settings get the new defaults where the old default was unsafe for big drives. */
+export function migrateSettings(saved: Partial<Settings>): Settings {
+  const s = { ...defaultSettings, ...saved };
+  if ((saved.settingsVersion ?? 1) < 2) {
+    // v1 defaulted to 1 KB: millions of tiny candidates made the search look frozen.
+    if ((saved.dupMinSize ?? 1024) <= 1024) s.dupMinSize = defaultSettings.dupMinSize;
+    s.settingsVersion = 2;
+  }
+  return s;
+}
 
 export interface TaskState {
   id: string;
@@ -95,7 +111,7 @@ export function AppProvider({ children, initialSettings }: { children: ReactNode
     api
       .getSettings()
       .then((s) => {
-        if (s && typeof s === "object") setSettings({ ...defaultSettings, ...(s as Partial<Settings>) });
+        if (s && typeof s === "object") setSettings(migrateSettings(s as Partial<Settings>));
       })
       .catch(() => {})
       .finally(() => {

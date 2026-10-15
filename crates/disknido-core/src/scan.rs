@@ -7,9 +7,14 @@
 //!
 //! Per-root replacement: a scan replaces only the indexed roots that overlap
 //! the roots it walks (same path, inside it or containing it); other roots
-//! stay. New ids continue from MAX(id)+1, so every root's subtree is the id
-//! range from the root up to the next root, and children keep larger ids
-//! than their parents.
+//! stay. Each root of a scan gets its own id range of `ROOT_SPAN` ids
+//! starting after MAX(id), so every root's subtree is the id range from the
+//! root up to the next root, and children keep larger ids than their parents.
+//!
+//! Roots on different physical disks are walked at the same time (one walker
+//! pool per disk); roots on the same disk one after another, so they never
+//! compete for the same heads. Extension totals per root are accumulated
+//! while writing (`ext_stats`), so the UI never has to group millions of rows.
 //!
 //! Links (symlinks, junctions, mount points) are recorded but never followed,
 //! so there are no cycles. Cloud placeholder folders are walked; cloud-only
@@ -49,7 +54,7 @@ fn yes() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ScanProgress {
     pub scan_id: i64,
-    /// enumerating | aggregating | done | cancelled
+    /// enumerating | aggregating | indexing | done | cancelled
     pub phase: String,
     pub root: String,
     pub current: String,
@@ -88,6 +93,8 @@ enum Msg {
     ReplaceRoot(PathBuf),
     Rows(Vec<Row>),
     Error(String, String),
+    /// All walkers finished.
+    Done,
 }
 
 #[derive(Default)]
@@ -99,8 +106,10 @@ struct Counters {
     current: Mutex<String>,
 }
 
+/// Ids reserved for each root of a scan (4 billion entries per root).
+const ROOT_SPAN: u64 = 1 << 32;
+
 struct Ctx<'a> {
-    next_id: AtomicU64,
     tx: SyncSender<Msg>,
     control: &'a Control,
     counters: &'a Counters,
@@ -126,7 +135,7 @@ fn is_excluded(ctx: &Ctx, path: &Path) -> bool {
 
 /// Parallel depth-first walk of one root. LIFO work stack keeps reads local,
 /// which matters on HDDs.
-fn walk(root: PathBuf, root_id: u64, threads: usize, ctx: &Ctx) {
+fn walk(root: PathBuf, root_id: u64, threads: usize, ctx: &Ctx, ids: &AtomicU64) {
     let queue = Mutex::new((vec![(root, root_id)], 0usize));
     let cv = Condvar::new();
     std::thread::scope(|s| {
@@ -152,7 +161,7 @@ fn walk(root: PathBuf, root_id: u64, threads: usize, ctx: &Ctx) {
                         }
                     };
                     let _ = ctx.control.checkpoint();
-                    let children = list_one(&dir, dir_id, ctx);
+                    let children = list_one(&dir, dir_id, ctx, ids);
                     let mut q = queue.lock().unwrap();
                     q.0.extend(children);
                     q.1 -= 1;
@@ -163,7 +172,7 @@ fn walk(root: PathBuf, root_id: u64, threads: usize, ctx: &Ctx) {
     });
 }
 
-fn list_one(dir: &Path, dir_id: u64, ctx: &Ctx) -> Vec<(PathBuf, u64)> {
+fn list_one(dir: &Path, dir_id: u64, ctx: &Ctx, ids: &AtomicU64) -> Vec<(PathBuf, u64)> {
     let items = match fsx::list_dir(dir) {
         Ok(items) => items,
         Err(e) => {
@@ -186,7 +195,7 @@ fn list_one(dir: &Path, dir_id: u64, ctx: &Ctx) -> Vec<(PathBuf, u64)> {
         if it.is_dir && is_excluded(ctx, &path) {
             continue;
         }
-        let id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = ids.fetch_add(1, Ordering::Relaxed);
         if it.is_dir {
             dirs += 1;
             if !it.is_link() {
@@ -235,7 +244,8 @@ struct Agg {
 const EMPTY: Agg = Agg { parent: 0, is_dir: false, size: 0, count: 0, newest: i64::MIN, oldest: i64::MAX };
 
 /// Deletes indexed roots from earlier scans (ids below `base`) that overlap
-/// `root`, with their whole subtree: the id range up to the next root.
+/// `root`, with their whole subtree (the id range up to the next root) and
+/// their extension totals.
 fn delete_overlapping(tx: &rusqlite::Transaction, root: &Path, base: u64) -> Result<()> {
     let old: Vec<(i64, String)> = {
         let mut st = tx.prepare_cached("SELECT id, name FROM entries WHERE parent_id=0 AND id<?1")?;
@@ -251,17 +261,24 @@ fn delete_overlapping(tx: &rusqlite::Transaction, root: &Path, base: u64) -> Res
                 r.get(0)
             })?;
         tx.execute("DELETE FROM entries WHERE id>=?1 AND id<?2", params![id, end])?;
+        tx.execute("DELETE FROM ext_stats WHERE root_id=?1", [id])?;
     }
     Ok(())
 }
 
-fn writer(conn: &mut Connection, scan_id: i64, base: u64, rx: Receiver<Msg>) -> Result<Vec<Agg>> {
-    let mut agg: Vec<Agg> = Vec::new();
+/// Folder accumulators per root (`aggs[k][id - root_base(k)]`) and
+/// (root, ext) → (files, bytes).
+type WriterOut = (Vec<Vec<Agg>>, std::collections::HashMap<(usize, String), (u64, u64)>);
+
+fn writer(conn: &mut Connection, scan_id: i64, base: u64, roots: usize, rx: Receiver<Msg>) -> Result<WriterOut> {
+    let mut aggs: Vec<Vec<Agg>> = vec![Vec::new(); roots];
+    let mut exts: std::collections::HashMap<(usize, String), (u64, u64)> = std::collections::HashMap::new();
     let mut tx = conn.transaction()?;
     let mut pending = 0usize;
     let mut last = Instant::now();
     while let Ok(msg) = rx.recv() {
         match msg {
+            Msg::Done => break,
             Msg::ReplaceRoot(root) => delete_overlapping(&tx, &root, base)?,
             Msg::Rows(rows) => {
                 {
@@ -270,6 +287,13 @@ fn writer(conn: &mut Connection, scan_id: i64, base: u64, rx: Receiver<Msg>) -> 
                     )?;
                     for r in &rows {
                         let ext = if r.is_dir { None } else { ext_of(&r.name) };
+                        let k = ((r.id - base) / ROOT_SPAN) as usize;
+                        let root_base = base + k as u64 * ROOT_SPAN;
+                        if !r.is_dir {
+                            let e = exts.entry((k, ext.clone().unwrap_or_default())).or_default();
+                            e.0 += 1;
+                            e.1 += r.size;
+                        }
                         st.execute(params![
                             r.id as i64,
                             r.parent as i64,
@@ -282,11 +306,12 @@ fn writer(conn: &mut Connection, scan_id: i64, base: u64, rx: Receiver<Msg>) -> 
                             ext,
                             (r.parent == 0).then_some(scan_id)
                         ])?;
-                        let i = (r.id - base) as usize;
+                        let agg = &mut aggs[k];
+                        let i = (r.id - root_base) as usize;
                         if agg.len() <= i {
                             agg.resize((i + 1).max(agg.len() * 2), EMPTY);
                         }
-                        let parent = if r.parent == 0 { 0 } else { (r.parent - base + 1) as u32 };
+                        let parent = if r.parent == 0 { 0 } else { (r.parent - root_base + 1) as u32 };
                         agg[i] = if r.is_dir {
                             Agg { parent, is_dir: true, ..EMPTY }
                         } else {
@@ -308,37 +333,54 @@ fn writer(conn: &mut Connection, scan_id: i64, base: u64, rx: Receiver<Msg>) -> 
         }
     }
     tx.commit()?;
-    Ok(agg)
+    Ok((aggs, exts))
 }
 
-fn aggregate(conn: &mut Connection, base: u64, mut agg: Vec<Agg>) -> Result<()> {
+fn aggregate(conn: &mut Connection, base: u64, (mut aggs, exts): WriterOut) -> Result<()> {
     // Children always have larger ids than their parents, so one reverse
-    // pass rolls every subtree up into its folder.
-    for i in (0..agg.len()).rev() {
-        let a = agg[i];
-        if a.parent == 0 {
-            continue;
+    // pass per root rolls every subtree up into its folder.
+    for agg in aggs.iter_mut() {
+        for i in (0..agg.len()).rev() {
+            let a = agg[i];
+            if a.parent == 0 {
+                continue;
+            }
+            let parent = &mut agg[a.parent as usize - 1];
+            parent.size += a.size;
+            parent.count += a.count;
+            parent.newest = parent.newest.max(a.newest);
+            parent.oldest = parent.oldest.min(a.oldest);
         }
-        let parent = &mut agg[a.parent as usize - 1];
-        parent.size += a.size;
-        parent.count += a.count;
-        parent.newest = parent.newest.max(a.newest);
-        parent.oldest = parent.oldest.min(a.oldest);
     }
     let tx = conn.transaction()?;
     {
         let mut st =
             tx.prepare("UPDATE entries SET total_size=?2, file_count=?3, newest_mtime=?4, oldest_mtime=?5 WHERE id=?1")?;
-        for (i, a) in agg.iter().enumerate() {
-            if a.is_dir {
-                let newest = (a.newest != i64::MIN).then_some(a.newest);
-                let oldest = (a.oldest != i64::MAX).then_some(a.oldest);
-                st.execute(params![(base + i as u64) as i64, a.size as i64, a.count, newest, oldest])?;
+        for (k, agg) in aggs.iter().enumerate() {
+            let root_base = base + k as u64 * ROOT_SPAN;
+            for (i, a) in agg.iter().enumerate() {
+                if a.is_dir {
+                    let newest = (a.newest != i64::MIN).then_some(a.newest);
+                    let oldest = (a.oldest != i64::MAX).then_some(a.oldest);
+                    st.execute(params![(root_base + i as u64) as i64, a.size as i64, a.count, newest, oldest])?;
+                }
+            }
+        }
+        let mut st = tx.prepare("INSERT OR REPLACE INTO ext_stats(root_id,ext,files,bytes) VALUES(?1,?2,?3,?4)")?;
+        for ((k, ext), (files, bytes)) in &exts {
+            // Only roots whose row was written (a cancelled scan may not reach some).
+            if aggs[*k].first().is_some_and(|a| a.is_dir) {
+                st.execute(params![(base + *k as u64 * ROOT_SPAN) as i64, ext, *files as i64, *bytes as i64])?;
             }
         }
     }
     tx.commit()?;
     Ok(())
+}
+
+fn disk_for(root: &Path, vols: &[volumes::Volume]) -> Option<u32> {
+    let s = root.to_string_lossy().to_ascii_uppercase();
+    vols.iter().find(|v| s.starts_with(&v.letter.to_ascii_uppercase())).and_then(|v| v.disk_number)
 }
 
 fn media_for(root: &Path, vols: &[volumes::Volume]) -> Media {
@@ -396,7 +438,6 @@ pub fn run_scan(
     let counters = Counters::default();
     let (tx, rx) = sync_channel::<Msg>(256);
     let ctx = Ctx {
-        next_id: AtomicU64::new(base),
         tx,
         control,
         counters: &counters,
@@ -417,29 +458,35 @@ pub fn run_scan(
         elapsed_ms: started.elapsed().as_millis() as u64,
     };
 
-    let agg = std::thread::scope(|s| -> Result<Vec<Agg>> {
-        let w = s.spawn(|| writer(&mut conn, scan_id, base, rx));
-        s.spawn(|| {
-            while walking.load(Ordering::Relaxed) {
-                on_progress(&snapshot("enumerating"));
-                std::thread::sleep(Duration::from_millis(150));
-            }
-        });
-        for root in &roots {
+    // Roots grouped by physical disk: disks are walked in parallel, roots on
+    // the same disk sequentially.
+    let mut by_disk: Vec<(Option<u32>, Vec<usize>)> = Vec::new();
+    for (k, root) in roots.iter().enumerate() {
+        let disk = disk_for(root, &vols);
+        match by_disk.iter_mut().find(|(d, _)| d.is_some() && *d == disk) {
+            Some((_, ks)) => ks.push(k),
+            None => by_disk.push((disk, vec![k])),
+        }
+    }
+    let active: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let walk_disk = |ks: &[usize]| -> Result<()> {
+        for &k in ks {
             if control.is_cancelled() {
                 break;
             }
-            *current_root.lock().unwrap() = root.to_string_lossy().into_owned();
+            let root = &roots[k];
+            let label = root.to_string_lossy().into_owned();
+            active.lock().unwrap().push(label.clone());
+            *current_root.lock().unwrap() = active.lock().unwrap().join(" · ");
             let md = std::fs::metadata(root)?;
             // A root is replaced only once its walk starts, so cancelling
             // keeps the old index of roots not reached yet.
             let _ = ctx.tx.send(Msg::ReplaceRoot(root.clone()));
-            let id = ctx.next_id.fetch_add(1, Ordering::Relaxed);
-            let name = root.to_string_lossy().into_owned();
+            let id = base + k as u64 * ROOT_SPAN;
             let _ = ctx.tx.send(Msg::Rows(vec![Row {
                 id,
                 parent: 0,
-                name,
+                name: label.clone(),
                 is_dir: true,
                 size: 0,
                 mtime: fsx::mtime_of(&md),
@@ -448,12 +495,35 @@ pub fn run_scan(
             }]));
             counters.dirs.fetch_add(1, Ordering::Relaxed);
             let threads = volumes::walker_threads(req.profile, media_for(root, &vols));
-            walk(root.clone(), id, threads, &ctx);
+            walk(root.clone(), id, threads, &ctx, &AtomicU64::new(id + 1));
+            active.lock().unwrap().retain(|a| *a != label);
+            *current_root.lock().unwrap() = active.lock().unwrap().join(" · ");
         }
-        drop(ctx);
+        Ok(())
+    };
+    let nroots = roots.len();
+    let agg = std::thread::scope(|s| -> Result<WriterOut> {
+        let w = s.spawn(|| writer(&mut conn, scan_id, base, nroots, rx));
+        s.spawn(|| {
+            while walking.load(Ordering::Relaxed) {
+                on_progress(&snapshot("enumerating"));
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        });
+        let walkers: Vec<_> = by_disk.iter().map(|(_, ks)| s.spawn(|| walk_disk(ks))).collect();
+        let mut walk_err = None;
+        for h in walkers {
+            if let Err(e) = h.join().map_err(|_| Error::Other("walker thread panicked".into())).and_then(|r| r) {
+                walk_err.get_or_insert(e);
+            }
+        }
+        let _ = ctx.tx.send(Msg::Done);
         let res = w.join().map_err(|_| Error::Other("writer thread panicked".into()))?;
         walking.store(false, Ordering::Relaxed);
-        res
+        match walk_err {
+            Some(e) => Err(e),
+            None => res,
+        }
     });
     let agg = match agg {
         Ok(a) => a,
@@ -465,6 +535,7 @@ pub fn run_scan(
     };
     on_progress(&snapshot("aggregating"));
     aggregate(&mut conn, base, agg)?;
+    on_progress(&snapshot("indexing"));
     create_indexes(&conn)?;
     let status = if control.is_cancelled() { "cancelled" } else { "done" };
     let p = snapshot(status);
@@ -489,6 +560,7 @@ fn create_indexes(conn: &Connection) -> rusqlite::Result<()> {
         "CREATE INDEX IF NOT EXISTS entries_parent ON entries(parent_id);
          CREATE INDEX IF NOT EXISTS entries_file_size ON entries(is_dir, size);
          CREATE INDEX IF NOT EXISTS entries_ext ON entries(ext) WHERE ext IS NOT NULL;
+         PRAGMA analysis_limit=1000;
          ANALYZE;",
     )
 }

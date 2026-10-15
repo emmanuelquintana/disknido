@@ -4,6 +4,7 @@ import {
   Disc3,
   FolderClock,
   History as HistoryIcon,
+  Library,
   House,
   LayoutGrid,
   ScanSearch,
@@ -13,6 +14,7 @@ import {
 import type { ReactNode } from "react";
 import { Meter } from "./components/ui";
 import { BackupsPage } from "./features/Backups";
+import { CatalogPage } from "./features/Catalog";
 import { CleanupPage } from "./features/Cleanup";
 import { DuplicatesPage } from "./features/Duplicates";
 import { ExplorerPage } from "./features/Explorer";
@@ -34,6 +36,7 @@ const NAV: { id: Section; key: Key; icon: ReactNode }[] = [
   { id: "images", key: "nav.images", icon: <Disc3 size={18} /> },
   { id: "backups", key: "nav.backups", icon: <Archive size={18} /> },
   { id: "oldFolders", key: "nav.oldFolders", icon: <FolderClock size={18} /> },
+  { id: "catalog", key: "nav.catalog", icon: <Library size={18} /> },
   { id: "history", key: "nav.history", icon: <HistoryIcon size={18} /> },
 ];
 
@@ -46,6 +49,7 @@ const PAGES: Record<Section, () => ReactNode> = {
   images: () => <ImagesPage />,
   backups: () => <BackupsPage />,
   oldFolders: () => <OldFoldersPage />,
+  catalog: () => <CatalogPage />,
   history: () => <HistoryPage />,
   settings: () => <SettingsPage />,
 };

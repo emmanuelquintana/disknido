@@ -104,14 +104,29 @@ pub fn sheet_references(path: &Path) -> Vec<String> {
     out
 }
 
+/// Smallest standalone `.bin`/`.img` treated as a disk image (a CD is ~650 MB;
+/// small console images exist, firmware blobs are usually far smaller).
+const AMBIGUOUS_MIN: u64 = 32 * 1024 * 1024;
+
+type ImgRow = (i64, i64, String, String, i64, i64, i64, u32);
+
+/// A descriptor (.cue/.ccd/.mds/.toc) with the same stem sits in the folder.
+fn has_sheet(rows: &[ImgRow], siblings: &[usize], name: &str) -> bool {
+    let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    siblings.iter().any(|&j| {
+        let (n, e) = (&rows[j].2, rows[j].3.as_str());
+        matches!(e, "cue" | "ccd" | "mds" | "gdi")
+            && (Path::new(n).file_stem().is_some_and(|s| s.to_string_lossy().to_lowercase() == stem) || e == "gdi" || e == "cue")
+    })
+}
+
 pub fn list(conn: &Connection, read_headers: bool) -> Result<Vec<DiskImage>> {
     let mut res = PathResolver::load(conn)?;
     let placeholders = DISK_IMAGE_EXTS.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(",");
     let mut st = conn.prepare(&format!(
         "SELECT id, parent_id, name, ext, size, mtime, ctime, attrs FROM entries WHERE is_dir=0 AND ext IN ({placeholders})"
     ))?;
-    type Row = (i64, i64, String, String, i64, i64, i64, u32);
-    let rows: Vec<Row> = st
+    let rows: Vec<ImgRow> = st
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)))?
         .collect::<rusqlite::Result<_>>()?;
     // Index by folder for set detection.
@@ -121,6 +136,12 @@ pub fn list(conn: &Connection, read_headers: bool) -> Result<Vec<DiskImage>> {
     }
     let mut out = Vec::with_capacity(rows.len());
     for (id, parent, name, ext, size, mtime, ctime, attrs) in &rows {
+        // `.bin` and `.img` are also used by firmware, game data and many
+        // apps. Count them only as part of a set (cue/ccd/mds next to them) or
+        // when they are large enough to be a disc.
+        if (ext == "bin" || ext == "img") && (*size as u64) < AMBIGUOUS_MIN && !has_sheet(&rows, &by_folder[parent], name) {
+            continue;
+        }
         let folder = res.dir_path(*parent).unwrap_or_default();
         let path = folder.join(name);
         let cloud_only = fsx::is_cloud_only_attrs(*attrs);

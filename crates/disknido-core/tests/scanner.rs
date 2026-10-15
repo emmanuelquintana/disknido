@@ -221,3 +221,68 @@ fn rescan_replaces_index() {
     let s = scan(&db(tmp.path()), &data);
     assert_eq!((s.files, s.bytes), (1, 20));
 }
+
+#[test]
+fn extension_totals_follow_the_index() {
+    let tmp = fixture_root();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    write(&a.join("x.iso"), &bytes(1, 100));
+    write(&a.join("sub/y.iso"), &bytes(2, 50));
+    write(&b.join("z.txt"), &bytes(3, 7));
+    write(&b.join("noext"), &bytes(4, 3));
+    let dbp = db(tmp.path());
+    let req = scan::ScanRequest {
+        roots: vec![a.clone(), b.clone()],
+        mode: "full".into(),
+        profile: Default::default(),
+        exclusions: vec![],
+        include_hidden: true,
+    };
+    scan::run_scan(&dbp, &req, &Control::default(), &|_| {}).unwrap();
+    let conn = db::open(&dbp).unwrap();
+    let ext = |k: &str| query::extensions(&conn, 100).unwrap().into_iter().find(|x| x.key == k).map(|x| (x.files, x.bytes));
+    assert_eq!(ext("iso"), Some((2, 150)));
+    assert_eq!(ext("txt"), Some((1, 7)));
+    assert_eq!(ext(""), Some((1, 3)));
+    // Rescanning a alone replaces only a's totals.
+    std::fs::remove_file(a.join("x.iso")).unwrap();
+    scan(&dbp, &a);
+    assert_eq!(ext("iso"), Some((1, 50)));
+    assert_eq!(ext("txt"), Some((1, 7)));
+}
+
+#[test]
+fn installed_programs_are_told_apart_from_old_folders() {
+    let tmp = fixture_root();
+    let d = tmp.path().join("data");
+    write(&d.join("Games/Juego/bin/juego.exe"), &bytes(1, 4096));
+    write(&d.join("Games/Juego/bin/motor.dll"), &bytes(2, 4096));
+    write(&d.join("Proyectos/tesis.docx"), &bytes(3, 4096));
+    write(&d.join("Instaladores/setup.exe"), &bytes(4, 4096));
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 365 * 86_400);
+    for f in ["Games/Juego/bin/juego.exe", "Games/Juego/bin/motor.dll", "Proyectos/tesis.docx", "Instaladores/setup.exe"] {
+        std::fs::File::options().write(true).open(d.join(f)).unwrap().set_modified(old).unwrap();
+    }
+    scan(&db(tmp.path()), &d);
+    let conn = db::open(&db(tmp.path())).unwrap();
+    let found = query::old_folders(&conn, 12, 0, 100, false).unwrap();
+    let reason = |n: &str| found.iter().find(|f| f.entry.name == n).map(|f| f.app_reason.is_some());
+    assert_eq!(reason("Games"), Some(true), "exe + dll below: installed program");
+    assert_eq!(reason("Proyectos"), Some(false));
+    assert_eq!(reason("Instaladores"), Some(false), "a lone installer is not an installed app");
+}
+
+#[test]
+fn small_bin_files_are_not_disk_images_unless_in_a_set() {
+    let tmp = fixture_root();
+    let d = tmp.path().join("data");
+    write(&d.join("firmware/update.bin"), &bytes(1, 4096));
+    write(&d.join("juego/Juego (Track 01).bin"), &bytes(2, 4096));
+    write(&d.join("juego/Juego.cue"), b"FILE \"Juego (Track 01).bin\" BINARY\n");
+    write(&d.join("x/disco.iso"), &bytes(3, 4096));
+    scan(&db(tmp.path()), &d);
+    let conn = db::open(&db(tmp.path())).unwrap();
+    let mut names: Vec<String> = disknido_core::images::list(&conn, false).unwrap().into_iter().map(|i| i.name).collect();
+    names.sort();
+    assert_eq!(names, vec!["Juego (Track 01).bin", "Juego.cue", "disco.iso"]);
+}

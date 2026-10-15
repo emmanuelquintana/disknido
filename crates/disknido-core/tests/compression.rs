@@ -49,6 +49,20 @@ fn archive_is_verified_and_originals_kept() {
     assert!(z.by_name("vacia/").is_ok(), "empty folders are kept");
     assert!(compress::test_archive(&zip_path).unwrap() > 0);
 
+    // The archive and its contents are in the catalog, searchable by name.
+    let hits = disknido_core::catalog::search(&conn, "informe ano", 10).unwrap();
+    assert_eq!(hits.len(), 1, "accent-insensitive search finds the file inside the ZIP");
+    assert_eq!(Path::new(&hits[0].archive_path), zip_path);
+    assert_eq!(hits[0].rel_path, "documentos/informe año 2025 – ñ.txt");
+    assert!(hits[0].blake3.is_some());
+    let a = disknido_core::catalog::get(&conn, r.catalog_id).unwrap().unwrap();
+    assert!(a.verified && a.exists);
+    assert_eq!(a.files, r.files);
+    // Importing an existing ZIP reads its file list.
+    let imported = disknido_core::catalog::import_zip(&conn, &zip_path).unwrap();
+    assert_eq!(imported.files, r.files);
+    assert_eq!(disknido_core::catalog::list(&conn).unwrap().len(), 1, "same path replaces the record");
+
     // Existing archive is never overwritten.
     let e = compress::compress(&conn, &req(&src, &out), &Control::default(), &|_| {}).unwrap_err();
     assert!(matches!(e, Error::Refused(_)));

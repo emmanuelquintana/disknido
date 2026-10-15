@@ -11,6 +11,30 @@ All notable changes to this project are documented here. The format follows
   separately keeps both in the index. Each drive shows its own last-analysis
   date. Index schema v2 (`entries.scan_id`), migrated automatically.
 
+## [0.2.0] — unreleased
+
+Fixes from testing on real drives (5.4 M files, 4.4 TB).
+
+### Added
+- **Archive catalog**: every verified ZIP records its file list and location;
+  add existing ZIPs; accent- and case-insensitive search; CSV export.
+- One index per drive: scanning D: and then E: keeps both.
+- Old folders recognise installed applications and games (programs + DLLs,
+  launcher libraries) and hide them by default.
+
+### Changed
+- The app no longer freezes while loading: each screen query uses its own
+  database connection in the background; Home shows its summary in two steps.
+- Extension/category distribution is computed while scanning (26 s → 2 ms on
+  6.2 M entries).
+- Drives on different physical disks are scanned at the same time.
+- Duplicate search opens each candidate once, reads drives in parallel, and
+  always shows the file being read and its progress. Default minimum size is
+  1 MB (older settings at 1 KB are migrated).
+- Disk images: small `.bin`/`.img` files are listed only as part of a CUE/CCD
+  set or when larger than 32 MB (firmware and game data were listed before).
+- Faster index statistics after a scan (`analysis_limit`).
+
 ## [0.1.0] — unreleased
 
 First functional version.

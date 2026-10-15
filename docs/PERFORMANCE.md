@@ -71,6 +71,39 @@ identity) and the mandatory byte-by-byte comparison.
 | Name search (LIKE) | ≈8–10 ms |
 | Extension distribution | ≈30 ms |
 
+## Real drives (15 Oct 2026)
+
+Measured with `bench scan` / `bench queries` on the developer's own PC
+(read-only; the index was written to another drive). Same machine as above.
+
+| Drive | Medium | Files | Data | Scan (alone) |
+| --- | --- | --- | --- | --- |
+| G: | NVMe SSD | 126 949 | 245 GB | 0.7 s |
+| D: | HDD (WD 1 TB) | 1 248 567 | 987 GB | 145 s (first, cold run) |
+| E: | HDD (Seagate 2 TB) | 533 831 | 1.7 TB | 46 s |
+| C: | NVMe SSD | 3 533 986 | 1.4 TB | 61 s walk, 97 s total |
+
+**All four drives in one analysis (5.4 M files, 6.2 M entries):** walking
+63 s, folder totals 12 s, index build 28 s → 102 s. Before this change the
+drives were walked one after another (sum of the walks ≈ 250 s); now each
+physical disk has its own walker. The second run had a warmer cache, so part
+of the gain is cache; the structural gain is that the total is bounded by the
+slowest disk instead of the sum.
+
+UI queries on that 6.2 M-entry index:
+
+| Query | Before | After |
+| --- | --- | --- |
+| Extension / category distribution (Home, Explorer) | 25.8 s each | 2 ms (totals written while scanning) |
+| Largest files / folders | 0.4 s / 1.4 s | same, now off the UI thread |
+| Backups / disk images / old folders (Home summary) | 3.6 s / 0.7 s / 0.7 s | same, loaded separately after Home renders |
+| Name search | 1.2 s | same, off the UI thread |
+
+The 26-second distribution query ran while holding the single shared
+database connection, which froze every other screen. Now each screen query
+runs on its own connection in the background, and the distribution comes
+from `ext_stats`.
+
 ## Not measured yet
 
 * 1 000 000 entries: the generator supports it (`gen <dir> 1000000`, ≈8.7 GB);

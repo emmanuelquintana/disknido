@@ -19,6 +19,8 @@ export function OldFoldersPage() {
   const [minBytes, setMinBytes] = useState(100 * 1024 * 1024);
   const effective = custom ? Math.max(1, Number(custom)) : months;
   const data = useAsync(() => (scanning ? Promise.resolve(null) : api.oldFolders(effective, minBytes)), [effective, minBytes, indexVersion, scanning]);
+  const apps = (data.data ?? []).filter((f) => f.appReason).length;
+  const shown = (data.data ?? []).filter((f) => settings.showInstalledApps || !f.appReason);
 
   const mark = (path: string, m: string | null) =>
     api.setMark(path, m).then(() => {
@@ -57,16 +59,25 @@ export function OldFoldersPage() {
               ))}
             </select>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={settings.showInstalledApps} onChange={(e) => updateSettings({ showInstalledApps: e.target.checked })} />
+            {t("old.showApps", { n: apps })}
+          </label>
         </div>
       </div>
       {data.error && <Notice tone="danger">{data.error}</Notice>}
-      {data.data && data.data.length === 0 && (
+      {data.data && shown.length === 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <EmptyState icon={<FolderClock size={40} />} title={t("old.none")} />
         </div>
       )}
       <div className="stack" style={{ marginTop: 16 }}>
-        {data.data?.map((f) => (
+        {data.loading && !data.data && (
+          <div className="card" aria-live="polite">
+            <p>{t("common.loading")}</p>
+          </div>
+        )}
+        {shown.map((f) => (
           <article key={f.entry.id} className="card">
             <div className="row-between">
               <div style={{ minWidth: 0 }}>
@@ -76,6 +87,7 @@ export function OldFoldersPage() {
                 <PathText path={f.entry.path} className="caption" />
               </div>
               <div className="row">
+                {f.appReason && <Badge tone="accent" title={f.appReason}>{t("old.appBadge")}</Badge>}
                 <Badge tone="warning">{t("old.idle", { n: f.monthsIdle })}</Badge>
                 {f.mark && <Badge tone="accent">{t(`old.${f.mark === "important" ? "markImportant" : f.mark === "favorite" ? "favorite" : "ignore"}` as Key)}</Badge>}
                 <PathActions path={f.entry.path} />
@@ -98,6 +110,12 @@ export function OldFoldersPage() {
                   <dd>{f.protectedReason}</dd>
                 </>
               )}
+              {f.appReason && (
+                <>
+                  <dt>{t("common.reason")}</dt>
+                  <dd>{f.appReason}</dd>
+                </>
+              )}
             </dl>
             <div className="actions" style={{ marginTop: 12 }}>
               <button className="btn btn-sm" onClick={() => mark(f.entry.path, "important")}>
@@ -112,7 +130,7 @@ export function OldFoldersPage() {
               <button className="btn btn-sm" onClick={() => mark(f.entry.path, "excluded")}>
                 {t("old.exclude")}
               </button>
-              {!f.protectedReason && (
+              {!f.protectedReason && !f.appReason && (
                 <button className="btn btn-sm" onClick={() => navigate("backups", { tab: "compress", source: f.entry.path })}>
                   {t("old.compress")}
                 </button>

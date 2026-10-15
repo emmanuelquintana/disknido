@@ -173,6 +173,72 @@ fn run(dir: &Path, profile: Profile) {
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
 }
 
+fn phase_logger(label: &'static str) -> impl Fn(&str, String) + Sync {
+    let start = Instant::now();
+    let last = std::sync::Mutex::new((String::new(), Instant::now()));
+    move |phase: &str, detail: String| {
+        let mut l = last.lock().unwrap();
+        if l.0 != phase || l.1.elapsed().as_secs() >= 10 {
+            eprintln!("[{label} {:>8.1}s] {phase:<12} {detail}", start.elapsed().as_secs_f64());
+            *l = (phase.to_string(), Instant::now());
+        }
+    }
+}
+
+fn diag_scan(db: &Path, roots: Vec<PathBuf>) {
+    let log = phase_logger("scan");
+    let req =
+        scan::ScanRequest { roots, mode: "full".into(), profile: Profile::Balanced, exclusions: vec![], include_hidden: true };
+    let s = scan::run_scan(db, &req, &Control::default(), &|p| {
+        log(&p.phase, format!("files={} dirs={} bytes={} errors={}", p.files, p.dirs, p.bytes, p.errors))
+    })
+    .unwrap();
+    println!("{}", serde_json::to_string(&serde_json::json!({"files": s.files, "dirs": s.dirs, "bytes": s.bytes, "errors": s.errors, "ms": s.elapsed_ms, "peak_ws": peak_rss()})).unwrap());
+}
+
+fn diag_dups(db: &Path, min_size: u64) {
+    let log = phase_logger("dups");
+    let req = duplicates::DupRequest { min_size, scopes: vec![], profile: Profile::Balanced };
+    let t = Instant::now();
+    let d = duplicates::find_duplicates(db, &req, &Control::default(), &|p| {
+        log(&p.phase, format!("{}/{} files, {}/{} MB", p.files_done, p.files_total, p.bytes_done >> 20, p.bytes_total >> 20))
+    })
+    .unwrap();
+    println!(
+        "groups={} files={} redundant_mb={} skipped={} ms={}",
+        d.groups,
+        d.files,
+        d.redundant_bytes >> 20,
+        d.skipped.len(),
+        t.elapsed().as_millis()
+    );
+}
+
+fn diag_queries(db: &Path) {
+    let conn = db::open(db).unwrap();
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0)).unwrap();
+    let dirs: i64 = conn.query_row("SELECT COUNT(*) FROM entries WHERE is_dir=1", [], |r| r.get(0)).unwrap();
+    println!("entries={n} dirs={dirs}");
+    let root = query::roots(&conn).unwrap()[0].id;
+    let (_, a) = time(|| query::children(&conn, root, 0, 500).unwrap());
+    let (_, b) = time(|| query::largest_files(&conn, 50).unwrap());
+    let (_, c) = time(|| query::largest_folders(&conn, 50).unwrap());
+    let (_, d) = time(|| query::extensions(&conn, 20).unwrap());
+    let (_, e) = time(|| query::categories(&conn).unwrap());
+    let (o, f) = time(|| query::old_folders(&conn, 12, 100 << 20, 100_000, false).unwrap());
+    let (_, g) = time(|| query::old_folders(&conn, 36, 1 << 30, 500, true).unwrap());
+    let (bk, h) = time(|| disknido_core::backups::list(&conn, "Backups").unwrap());
+    let (im, i) = time(|| disknido_core::images::list(&conn, false).unwrap());
+    let (_, j) = time(|| query::search(&conn, "setup", 200).unwrap());
+    let (_, k) = time(|| duplicates::totals(&conn).unwrap());
+    println!(
+        "children {a:.0}ms | largest_files {b:.0} | largest_folders {c:.0} | extensions {d:.0} | categories {e:.0} | old(12m,count={}) {f:.0} | old(36m,types) {g:.0} | backups(n={}) {h:.0} | images(n={}) {i:.0} | search {j:.0} | dup_totals {k:.0}",
+        o.len(),
+        bk.len(),
+        im.len()
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let dir = PathBuf::from(args.get(2).expect("usage: bench gen|run|demo <dir> ..."));
@@ -187,6 +253,15 @@ fn main() {
             };
             run(&dir, profile)
         }
+        // bench scan <db> <root>... : real-drive diagnostics, phase timings
+        "scan" => {
+            let roots: Vec<PathBuf> = args[3..].iter().filter(|a| !a.starts_with("--")).map(PathBuf::from).collect();
+            diag_scan(&dir, roots)
+        }
+        // bench dups <db> <min_size> : duplicate search with phase timings
+        "dups" => diag_dups(&dir, args.get(3).and_then(|n| n.parse().ok()).unwrap_or(1 << 20)),
+        // bench queries <db> : time the UI queries over an existing index
+        "queries" => diag_queries(&dir),
         other => panic!("unknown command {other}"),
     }
 }

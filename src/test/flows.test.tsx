@@ -32,18 +32,12 @@ const emptyOverview: Overview = {
   extensions: [],
   duplicateGroups: 0,
   duplicateBytes: 0,
-  backups: 0,
-  backupBytes: 0,
-  images: 0,
-  imageBytes: 0,
-  oldFolders: 0,
-  oldFolderBytes: 0,
   recycleBin: { items: 0, bytes: 0 },
 };
 
 describe("shell", () => {
   it("has labelled navigation and marks the current page", async () => {
-    mockCommands({ list_volumes: [vol("C")], overview: emptyOverview });
+    mockCommands({ list_volumes: [vol("C")], overview: emptyOverview, findings: { backups: 0, backupBytes: 0, images: 0, imageBytes: 0, oldFolders: 0, oldFolderBytes: 0 } });
     renderApp(<App />);
     const nav = screen.getByRole("navigation", { name: "Navegación principal" });
     expect(within(nav).getByRole("button", { name: /Inicio/ })).toHaveAttribute("aria-current", "page");
@@ -54,7 +48,7 @@ describe("shell", () => {
 
 describe("home", () => {
   it("shows drives with usage and an empty state before any analysis", async () => {
-    mockCommands({ list_volumes: [vol("D"), vol("E", { external: true, media: "hdd" })], overview: emptyOverview });
+    mockCommands({ list_volumes: [vol("D"), vol("E", { external: true, media: "hdd" })], overview: emptyOverview, findings: { backups: 0, backupBytes: 0, images: 0, imageBytes: 0, oldFolders: 0, oldFolderBytes: 0 } });
     renderApp(<HomePage />);
     expect(await screen.findByText("D:")).toBeInTheDocument();
     expect(screen.getByText("Externa")).toBeInTheDocument();
@@ -201,5 +195,34 @@ describe("cleanup", () => {
     expect(within(dlg).getByText(/No podrás restaurarlos/)).toBeInTheDocument();
     await userEvent.click(within(dlg).getByRole("button", { name: "Cancelar" }));
     expect(emptied).toBe(0);
+  });
+});
+
+import { CatalogPage } from "../features/Catalog";
+import { migrateSettings } from "../state";
+
+describe("settings migration", () => {
+  it("moves the old 1 KB duplicate minimum to 1 MB once", () => {
+    expect(migrateSettings({ dupMinSize: 1024 }).dupMinSize).toBe(1024 * 1024);
+    expect(migrateSettings({ dupMinSize: 10 * 1024 * 1024 }).dupMinSize).toBe(10 * 1024 * 1024);
+    expect(migrateSettings({ dupMinSize: 1024, settingsVersion: 2 }).dupMinSize).toBe(1024);
+  });
+});
+
+describe("archive catalog", () => {
+  it("searches inside ZIPs as you type and shows where each file is", async () => {
+    const searched: unknown[] = [];
+    mockCommands({
+      catalog_list: [],
+      catalog_search: (a: Record<string, unknown>) => {
+        searched.push(a.needle);
+        return [{ archiveId: 1, archivePath: "D:\\Backups\\Backup Enero 2025.zip", relPath: "fotos/Cancún.jpg", name: "Cancún.jpg", size: 2048, mtime: 1, blake3: "ab" }];
+      },
+    });
+    renderApp(<CatalogPage />);
+    await userEvent.type(screen.getByRole("textbox", { name: /Buscar un archivo dentro/ }), "cancun");
+    expect(await screen.findByText("Cancún.jpg")).toBeInTheDocument();
+    expect(screen.getByTitle("D:\\Backups\\Backup Enero 2025.zip")).toBeInTheDocument();
+    expect(searched.at(-1)).toBe("cancun");
   });
 });

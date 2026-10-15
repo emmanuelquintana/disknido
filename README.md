@@ -26,6 +26,7 @@ compresses them into **verified** ZIP archives.
 | **Exact duplicates** | Size → hard-link identity → partial BLAKE3 → full BLAKE3 → **byte-by-byte**. Re-verified again right before a copy is recycled. Copies inside backups are protected. |
 | **Disk images** | ISO, BIN/CUE, MDF/MDS, CHD, RVZ, WBFS, WUD/WUX, CSO, GDI… CUE/GDI sets, ISO 9660 volume labels, orphan warnings. |
 | **Backups by drive, year and month** | Detects `Backup Enero 2025`, `BACKUP_2024_08`, `bk-02-2025`, `Respaldo Laptop 2023-11`…; flags ambiguous dates; dry-run plan with the resulting tree; atomic same-volume moves; verification; undo. |
+| **Archive catalog** | Every verified ZIP keeps a searchable list of its contents and location; add existing ZIPs too. Accent- and case-insensitive search. |
 | **Verified compression** | ZIP (Deflate/ZIP64) that is reopened and compared file by file with the originals (BLAKE3). Originals are always kept. Honest space accounting. |
 
 | Duplicates | Backup plan | Verified ZIP |

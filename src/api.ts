@@ -9,6 +9,14 @@ export const api = {
   cancelTask: (taskId: string) => invoke<void>("cancel_task", { taskId }),
   pauseTask: (taskId: string, paused: boolean) => invoke<void>("pause_task", { taskId, paused }),
   overview: (rootName: string) => invoke<T.Overview>("overview", { rootName }),
+  findings: (rootName: string) => invoke<T.Findings>("findings", { rootName }),
+  catalogList: () => invoke<T.ArchiveInfo[]>("catalog_list"),
+  catalogSearch: (needle: string) => invoke<T.CatalogHit[]>("catalog_search", { needle }),
+  catalogEntries: (id: number, offset: number, limit: number) => invoke<T.CatalogHit[]>("catalog_entries", { id, offset, limit }),
+  catalogImport: (paths: string[]) =>
+    invoke<({ Ok: T.ArchiveInfo } | { Err: string })[]>("catalog_import", { paths }),
+  catalogForget: (id: number) => invoke<void>("catalog_forget", { id }),
+  catalogExport: (id: number, path: string) => invoke<void>("catalog_export", { id, path }),
   children: (parentId: number, offset: number, limit: number) =>
     invoke<[T.EntryView[], number]>("children", { parentId, offset, limit }),
   largest: (limit: number) => invoke<[T.EntryView[], T.EntryView[]]>("largest", { limit }),

@@ -1,12 +1,15 @@
 //! Exact duplicate detection.
 //!
 //! 1. Same size (from the index; unique sizes are skipped).
-//! 2. Same physical file? Hard links share a FileKey and are collapsed — they
-//!    are one copy, not duplicates.
-//! 3. Partial fingerprint (BLAKE3 of first + last 64 KiB). Filter only.
-//! 4. Full BLAKE3, streamed in 1 MiB chunks, cached by (path, size, mtime, key).
-//! 5. Byte-by-byte comparison inside each hash group. Only groups that pass
+//! 2. One open per candidate: physical identity (hard links share a FileKey
+//!    and are collapsed — one copy, not duplicates) and a partial
+//!    fingerprint (BLAKE3 of first + last 64 KiB). Filter only.
+//! 3. Full BLAKE3, streamed in 1 MiB chunks, cached by (path, size, mtime, key).
+//! 4. Byte-by-byte comparison inside each hash group. Only groups that pass
 //!    are stored as `verified`. Files that change during the run are dropped.
+//!
+//! Reads are issued in path order with one worker pool per drive, so disks
+//! are read in parallel and an HDD never paces an SSD.
 
 use crate::fsx::{self, FileKey};
 use crate::query::PathResolver;
@@ -44,13 +47,15 @@ fn one() -> u64 {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DupProgress {
-    /// grouping | identity | partial | hashing | verifying | saving | done | cancelled
+    /// grouping | partial | hashing | verifying | saving | done | cancelled
     pub phase: String,
     pub files_done: u64,
     pub files_total: u64,
     pub bytes_done: u64,
     pub bytes_total: u64,
     pub elapsed_ms: u64,
+    /// File being read right now (shown so long reads never look frozen).
+    pub current: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -123,6 +128,10 @@ fn read_full(f: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
 
 /// True only if both files have exactly the same bytes.
 pub fn files_identical(a: &Path, b: &Path, control: &Control) -> Result<bool> {
+    files_identical_counted(a, b, control, &|_| {})
+}
+
+fn files_identical_counted(a: &Path, b: &Path, control: &Control, read: &dyn Fn(u64)) -> Result<bool> {
     let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
     if fa.metadata()?.len() != fb.metadata()?.len() {
         return Ok(false);
@@ -133,6 +142,7 @@ pub fn files_identical(a: &Path, b: &Path, control: &Control) -> Result<bool> {
         control.checkpoint()?;
         let na = read_full(&mut fa, &mut ba)?;
         let nb = read_full(&mut fb, &mut bb)?;
+        read((na + nb) as u64);
         if na != nb || ba[..na] != bb[..nb] {
             return Ok(false);
         }
@@ -146,10 +156,14 @@ pub fn files_identical(a: &Path, b: &Path, control: &Control) -> Result<bool> {
 /// ponytail: compares each member against a representative, so the
 /// representative is re-read per member; fine for typical groups of 2–5.
 pub fn split_identical(paths: &[PathBuf], control: &Control) -> Result<Vec<Vec<usize>>> {
+    split_identical_counted(paths, control, &|_| {})
+}
+
+fn split_identical_counted(paths: &[PathBuf], control: &Control, read: &dyn Fn(u64)) -> Result<Vec<Vec<usize>>> {
     let mut classes: Vec<Vec<usize>> = Vec::new();
     'outer: for i in 0..paths.len() {
         for class in classes.iter_mut() {
-            if files_identical(&paths[class[0]], &paths[i], control)? {
+            if files_identical_counted(&paths[class[0]], &paths[i], control, read)? {
                 class.push(i);
                 continue 'outer;
             }
@@ -231,35 +245,59 @@ pub fn load_candidates(conn: &Connection, req: &DupRequest) -> Result<Vec<Candid
     Ok(out)
 }
 
-fn group_by<K: std::hash::Hash + Eq>(items: Vec<Candidate>, key: impl Fn(&Candidate) -> Option<K>) -> Vec<Vec<Candidate>> {
-    let mut map: HashMap<K, Vec<Candidate>> = HashMap::new();
-    for c in items {
-        if let Some(k) = key(&c) {
-            map.entry(k).or_default().push(c);
-        }
+/// Runs `f` over `items`, one worker pool per drive so an SSD is not paced
+/// by an HDD and two physical disks are read at the same time. Within a
+/// drive, items are processed in their given (path) order. Results keep
+/// input order.
+fn par_by_drive<T: Sync, R: Send>(
+    items: &[T],
+    path_of: impl Fn(&T) -> &Path + Sync,
+    threads_for: impl Fn(&str) -> usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let mut by_drive: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, it) in items.iter().enumerate() {
+        let d = path_of(it).to_string_lossy().get(..2).unwrap_or("").to_ascii_uppercase();
+        by_drive.entry(d).or_default().push(i);
     }
-    map.into_values().filter(|g| g.len() > 1).collect()
-}
-
-/// Runs `f` over `items` with `threads` workers; results keep input order.
-fn par_map<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let next = AtomicUsize::new(0);
     let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     std::thread::scope(|s| {
-        for _ in 0..threads.max(1) {
-            s.spawn(|| {
-                loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= items.len() {
-                        break;
+        for (drive, idx) in &by_drive {
+            let next = std::sync::Arc::new(AtomicUsize::new(0));
+            for _ in 0..threads_for(drive).max(1) {
+                let (next, out, f) = (next.clone(), &out, &f);
+                s.spawn(move || {
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&i) = idx.get(k) else { break };
+                        let r = f(&items[i]);
+                        out.lock().unwrap()[i] = Some(r);
                     }
-                    let r = f(&items[i]);
-                    out.lock().unwrap()[i] = Some(r);
-                }
-            });
+                });
+            }
         }
     });
     out.into_inner().unwrap().into_iter().map(|r| r.expect("every item processed")).collect()
+}
+
+/// Opens a file once: its physical identity (hard links share it) and the
+/// partial fingerprint. Files up to 128 KiB are hashed completely here.
+fn identity_and_partial(path: &Path, size: u64) -> Result<(FileKey, String)> {
+    let mut f = File::open(path)?;
+    let key = fsx::file_key(&f)?;
+    let mut h = blake3::Hasher::new();
+    let mut buf = vec![0u8; PARTIAL as usize];
+    let n = read_full(&mut f, &mut buf)?;
+    h.update(&buf[..n]);
+    if size > 2 * PARTIAL {
+        f.seek(SeekFrom::End(-(PARTIAL as i64)))?;
+        let n = read_full(&mut f, &mut buf)?;
+        h.update(&buf[..n]);
+    } else if size > PARTIAL {
+        let n = read_full(&mut f, &mut buf)?;
+        h.update(&buf[..n]);
+    }
+    Ok((key, h.finalize().to_hex().to_string()))
 }
 
 pub fn find_duplicates(
@@ -270,6 +308,7 @@ pub fn find_duplicates(
 ) -> Result<DupSummary> {
     let started = Instant::now();
     let db = Mutex::new(crate::db::open(db_path)?);
+    let current = Mutex::new(String::new());
     let progress = |phase: &str, done: u64, total: u64, bd: u64, bt: u64| {
         on_progress(&DupProgress {
             phase: phase.into(),
@@ -278,117 +317,141 @@ pub fn find_duplicates(
             bytes_done: bd,
             bytes_total: bt,
             elapsed_ms: started.elapsed().as_millis() as u64,
+            current: current.lock().map(|c| c.clone()).unwrap_or_default(),
         })
     };
+    let set_current = |p: &Path| {
+        if let Ok(mut c) = current.try_lock() {
+            *c = p.to_string_lossy().into_owned();
+        }
+    };
     progress("grouping", 0, 0, 0, 0);
-    let candidates = load_candidates(&db.lock().unwrap(), req)?;
-    let media = media_of(&req.scopes, &candidates);
-    let threads = volumes::reader_threads(req.profile, media);
+    let mut candidates = load_candidates(&db.lock().unwrap(), req)?;
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    let vols = volumes::list_volumes();
+    let threads_for = |drive: &str| {
+        let media = vols.iter().find(|v| v.letter.eq_ignore_ascii_case(drive)).map(|v| v.media).unwrap_or(Media::Unknown);
+        volumes::reader_threads(req.profile, media)
+    };
     let skipped: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
     let skip = |p: &Path, why: String| skipped.lock().unwrap().push((p.to_string_lossy().into_owned(), why));
+    let ticker = Mutex::new(Instant::now() - std::time::Duration::from_secs(1));
+    let due = || {
+        ticker.try_lock().is_ok_and(|mut t| {
+            let ok = t.elapsed().as_millis() >= 200;
+            if ok {
+                *t = Instant::now();
+            }
+            ok
+        })
+    };
 
-    // Identity: open each file once (also proves it is readable now).
+    // Phase 1: open each candidate once — identity (hard links) + partial
+    // fingerprint.
     let total = candidates.len() as u64;
-    progress("identity", 0, total, 0, 0);
-    let mut by_size = group_by(candidates, |c| Some(c.size));
-    let mut hard_links = 0u64;
-    let mut pool = Vec::new();
-    for group in by_size.iter_mut() {
-        control.checkpoint()?;
-        let mut seen: std::collections::HashSet<FileKey> = std::collections::HashSet::new();
-        for mut c in group.drain(..) {
-            match File::open(&c.path).and_then(|f| fsx::file_key(&f)) {
-                Ok(k) => {
-                    if !seen.insert(k) {
-                        hard_links += 1; // same physical file as an earlier path
-                        continue;
-                    }
-                    c.key = Some(k);
-                    pool.push(c);
-                }
-                Err(e) => skip(&c.path, format!("No se pudo abrir: {e}")),
-            }
-        }
-    }
-    drop(by_size);
-
-    // Partial fingerprint. Reads are issued in path order: on HDDs this keeps
-    // the head moving forward instead of seeking at random (see docs/PERFORMANCE.md).
-    let size_groups = group_by(pool, |c| Some(c.size));
-    let mut flat: Vec<Candidate> = size_groups.into_iter().flatten().collect();
-    flat.sort_by(|a, b| a.path.cmp(&b.path));
     let done = AtomicU64::new(0);
-    let total = flat.len() as u64;
-    // (hash, freshly computed?) — fresh hashes are cached in one transaction below.
-    let partials: Vec<Option<(String, bool)>> = par_map(&flat, threads, |c| {
-        if control.is_cancelled() {
-            return None;
-        }
-        let _ = control.checkpoint();
-        let d = done.fetch_add(1, Ordering::Relaxed);
-        if d.is_multiple_of(64) {
-            progress("partial", d, total, 0, 0);
-        }
-        if let Some(h) = cached(&db.lock().unwrap(), c, "partial") {
-            return Some((h, false));
-        }
-        match partial_hash(&c.path, c.size) {
-            Ok(h) => Some((h, true)),
-            Err(e) => {
-                skip(&c.path, format!("No se pudo leer: {e}"));
-                None
+    let firsts: Vec<Option<(FileKey, String)>> = par_by_drive(
+        &candidates,
+        |c| &c.path,
+        threads_for,
+        |c| {
+            if control.checkpoint().is_err() {
+                return None;
             }
-        }
-    });
+            set_current(&c.path);
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if due() {
+                progress("partial", d, total, 0, 0);
+            }
+            match identity_and_partial(&c.path, c.size) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    skip(&c.path, format!("No se pudo leer: {e}"));
+                    None
+                }
+            }
+        },
+    );
     control.checkpoint()?;
-    store_cache_batch(
-        &db.lock().unwrap(),
-        flat.iter().zip(&partials).filter_map(|(c, h)| h.as_ref().filter(|h| h.1).map(|h| (c, Some(h.0.as_str()), None))),
-    )?;
+    let mut hard_links = 0u64;
     let mut pmap: HashMap<(u64, String), Vec<Candidate>> = HashMap::new();
-    for (c, h) in flat.into_iter().zip(partials) {
-        if let Some((h, _)) = h {
+    for (mut c, r) in candidates.into_iter().zip(firsts) {
+        if let Some((k, h)) = r {
+            c.key = Some(k);
             pmap.entry((c.size, h)).or_default().push(c);
         }
     }
-    let mut flat: Vec<(Candidate, String)> = pmap
-        .into_iter()
-        .filter(|(_, g)| g.len() > 1)
-        .flat_map(|((_, h), g)| g.into_iter().map(move |c| (c, h.clone())))
-        .collect();
+    // Within a group, paths sharing a FileKey are the same physical file.
+    let mut flat: Vec<(Candidate, String)> = Vec::new();
+    for ((_, h), g) in pmap {
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<Candidate> = g
+            .into_iter()
+            .filter(|c| {
+                let new = seen.insert(c.key);
+                if !new {
+                    hard_links += 1;
+                }
+                new
+            })
+            .collect();
+        if unique.len() > 1 {
+            flat.extend(unique.into_iter().map(|c| (c, h.clone())));
+        }
+    }
     flat.sort_by(|a, b| a.0.path.cmp(&b.0.path));
 
-    // Full hash. Files up to 2 × 64 KiB were already hashed completely by the
-    // partial pass (head + tail cover every byte), so they are not read again.
-    let bytes_total: u64 = flat.iter().map(|c| c.0.size).sum();
+    // Phase 2: full BLAKE3, except files the partial pass read completely.
+    let bytes_total: u64 = flat.iter().filter(|c| c.0.size > 2 * PARTIAL).map(|c| c.0.size).sum();
     let bytes_done = AtomicU64::new(0);
     let done = AtomicU64::new(0);
     let total = flat.len() as u64;
-    let fulls: Vec<Option<(String, bool)>> = par_map(&flat, threads, |(c, partial)| {
-        if control.is_cancelled() {
-            return None;
-        }
-        let d = done.fetch_add(1, Ordering::Relaxed);
-        if d.is_multiple_of(16) {
-            progress("hashing", d, total, bytes_done.load(Ordering::Relaxed), bytes_total);
-        }
-        if c.size <= 2 * PARTIAL {
-            bytes_done.fetch_add(c.size, Ordering::Relaxed);
-            return Some((partial.clone(), false));
-        }
-        if let Some(h) = cached(&db.lock().unwrap(), c, "full") {
-            bytes_done.fetch_add(c.size, Ordering::Relaxed);
-            return Some((h, false));
-        }
-        match hash_file(&c.path, control, &bytes_done) {
-            Ok(h) => Some((h, true)),
-            Err(crate::Error::Cancelled) => None,
-            Err(e) => {
-                skip(&c.path, format!("No se pudo leer: {e}"));
-                None
+    let fulls: Vec<Option<(String, bool)>> = par_by_drive(
+        &flat,
+        |c| &c.0.path,
+        threads_for,
+        |(c, partial)| {
+            if control.checkpoint().is_err() {
+                return None;
             }
-        }
-    });
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if c.size <= 2 * PARTIAL {
+                return Some((partial.clone(), false));
+            }
+            set_current(&c.path);
+            if let Some(h) = cached(&db.lock().unwrap(), c, "full") {
+                bytes_done.fetch_add(c.size, Ordering::Relaxed);
+                return Some((h, false));
+            }
+            // Hash in chunks and keep the progress ticking for huge files.
+            let res = (|| -> Result<String> {
+                let mut f = File::open(&c.path)?;
+                let mut h = blake3::Hasher::new();
+                let mut buf = vec![0u8; CHUNK];
+                loop {
+                    control.checkpoint()?;
+                    let n = f.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    h.update(&buf[..n]);
+                    let b = bytes_done.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
+                    if due() {
+                        progress("hashing", d, total, b, bytes_total);
+                    }
+                }
+                Ok(h.finalize().to_hex().to_string())
+            })();
+            match res {
+                Ok(h) => Some((h, true)),
+                Err(crate::Error::Cancelled) => None,
+                Err(e) => {
+                    skip(&c.path, format!("No se pudo leer: {e}"));
+                    None
+                }
+            }
+        },
+    );
     control.checkpoint()?;
     store_cache_batch(
         &db.lock().unwrap(),
@@ -403,14 +466,22 @@ pub fn find_duplicates(
     let mut hash_groups: Vec<((u64, String), Vec<Candidate>)> = hmap.into_iter().filter(|(_, g)| g.len() > 1).collect();
     hash_groups.sort_by(|a, b| a.1[0].path.cmp(&b.1[0].path));
 
-    // Byte-by-byte verification.
+    // Phase 3: byte-by-byte verification, with byte progress for big files.
     let total = hash_groups.len() as u64;
+    let vbytes_total: u64 = hash_groups.iter().map(|((s, _), g)| s * g.len() as u64).sum();
+    let vbytes = AtomicU64::new(0);
     let mut verified: Vec<(u64, String, Vec<Candidate>)> = Vec::new();
     for (i, ((size, hash), group)) in hash_groups.into_iter().enumerate() {
         control.checkpoint()?;
-        progress("verifying", i as u64, total, 0, 0);
+        set_current(&group[0].path);
+        progress("verifying", i as u64, total, vbytes.load(Ordering::Relaxed), vbytes_total);
         let paths: Vec<PathBuf> = group.iter().map(|c| c.path.clone()).collect();
-        let classes = match split_identical(&paths, control) {
+        let classes = match split_identical_counted(&paths, control, &|n| {
+            let b = vbytes.fetch_add(n, Ordering::Relaxed) + n;
+            if due() {
+                progress("verifying", i as u64, total, b, vbytes_total);
+            }
+        }) {
             Ok(c) => c,
             Err(crate::Error::Cancelled) => return Err(crate::Error::Cancelled),
             Err(e) => {
@@ -470,26 +541,6 @@ pub fn find_duplicates(
     };
     progress("done", files, files, 0, 0);
     Ok(summary)
-}
-
-fn media_of(scopes: &[String], cands: &[Candidate]) -> Media {
-    // Use the slowest medium involved: one HDD in the set means HDD pacing.
-    let vols = volumes::list_volumes();
-    let mut letters: Vec<String> = scopes.iter().filter_map(|s| s.get(..2).map(|x| x.to_ascii_uppercase())).collect();
-    if letters.is_empty() {
-        letters = cands.iter().filter_map(|c| c.path.to_str()?.get(..2).map(|x| x.to_ascii_uppercase())).collect();
-        letters.sort();
-        letters.dedup();
-    }
-    let medias: Vec<Media> =
-        letters.iter().filter_map(|l| vols.iter().find(|v| v.letter.eq_ignore_ascii_case(l)).map(|v| v.media)).collect();
-    if medias.contains(&Media::Hdd) {
-        Media::Hdd
-    } else if medias.is_empty() {
-        Media::Unknown
-    } else {
-        Media::Ssd
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -115,6 +115,44 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE entries ADD COLUMN scan_id INTEGER;
     UPDATE entries SET scan_id = (SELECT MAX(id) FROM scans) WHERE parent_id = 0;
     "#,
+    // v3: catalog of archives (what is inside each ZIP and where it lives).
+    // Survives "reset index": it is the user's record, not analysis data.
+    r#"
+    CREATE TABLE archives (
+        id INTEGER PRIMARY KEY,
+        path TEXT NOT NULL,
+        path_key TEXT NOT NULL UNIQUE,     -- lower-cased path
+        search_key TEXT NOT NULL,          -- lower-cased, accents folded
+        source TEXT,                       -- folder it was made from, when known
+        origin TEXT NOT NULL,              -- created | imported
+        created_at INTEGER NOT NULL,
+        files INTEGER NOT NULL,
+        bytes INTEGER NOT NULL,            -- uncompressed total
+        archive_bytes INTEGER NOT NULL,
+        verified INTEGER NOT NULL          -- 1 = contents checked with BLAKE3 when created
+    );
+    CREATE TABLE archive_entries (
+        archive_id INTEGER NOT NULL REFERENCES archives(id) ON DELETE CASCADE,
+        rel_path TEXT NOT NULL,            -- path inside the archive, '/' separated
+        name TEXT NOT NULL,                -- last component
+        search_key TEXT NOT NULL,          -- rel_path lower-cased, accents folded
+        size INTEGER NOT NULL,
+        mtime INTEGER,
+        blake3 TEXT
+    );
+    CREATE INDEX archive_entries_archive ON archive_entries(archive_id);
+    "#,
+    // v4: extension totals per indexed root, filled while scanning, so the
+    // distribution never needs a GROUP BY over millions of rows.
+    r#"
+    CREATE TABLE ext_stats (
+        root_id INTEGER NOT NULL,
+        ext TEXT NOT NULL,                 -- '' = no extension
+        files INTEGER NOT NULL,
+        bytes INTEGER NOT NULL,
+        PRIMARY KEY (root_id, ext)
+    );
+    "#,
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -164,7 +202,7 @@ pub fn recover_interrupted(conn: &Connection) -> rusqlite::Result<usize> {
 /// "Restablecer índice": drops analysis results. Never touches user files.
 pub fn reset_index(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-        "DELETE FROM entries; DELETE FROM scan_errors; DELETE FROM scans; DELETE FROM hash_cache;
+        "DELETE FROM entries; DELETE FROM ext_stats; DELETE FROM scan_errors; DELETE FROM scans; DELETE FROM hash_cache;
          DELETE FROM dup_files; DELETE FROM dup_groups;",
     )
 }

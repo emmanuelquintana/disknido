@@ -3,6 +3,7 @@
 //! (organize, compress, recycle) that always re-validate on disk first.
 
 pub mod backups;
+pub mod catalog;
 pub mod classify;
 pub mod cleanup;
 pub mod compress;

@@ -452,7 +452,7 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
 export function Compress({ items, initialSource }: { items: BackupItem[]; initialSource?: string }) {
   const t = useT();
   const lang = useLang();
-  const { settings, trackTask, latest, toast } = useApp();
+  const { settings, trackTask, latest, toast, navigate } = useApp();
   const [source, setSource] = useState(initialSource ?? "");
   const [destDir, setDestDir] = useState("");
   const [name, setName] = useState("");
@@ -599,6 +599,12 @@ export function Compress({ items, initialSource }: { items: BackupItem[]; initia
                 <PathActions path={result.archive} />
               </div>
               <p className="caption">{t("compress.keepNote")}</p>
+              <div className="row">
+                <span className="caption">{t("compress.inCatalog")}</span>
+                <button className="btn btn-sm" onClick={() => navigate("catalog", { archive: String(result.catalogId) })}>
+                  {t("compress.openCatalog")}
+                </button>
+              </div>
               <details className="disclosure">
                 <summary>{t("compress.notPreserved")}</summary>
                 <ul>

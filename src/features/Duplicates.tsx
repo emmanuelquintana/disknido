@@ -245,6 +245,13 @@ export function DuplicatesPage() {
               <div style={{ marginTop: 8 }}>
                 <Meter value={frac} label={t(`dup.phase.${p?.phase ?? "grouping"}` as Key)} />
               </div>
+              {p?.current && (
+                <div style={{ marginTop: 8 }}>
+                  <span className="caption">{t("scan.current")}</span>
+                  <PathText path={p.current} className="caption" />
+                </div>
+              )}
+              <p className="caption">{t("dup.canLeave")}</p>
             </div>
           )}
           {task?.done?.error && (

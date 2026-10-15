@@ -70,6 +70,8 @@ pub struct CompressResult {
     pub potential_saving: i64,
     pub verified: bool,
     pub not_preserved: Vec<String>,
+    /// Row in the archive catalog.
+    pub catalog_id: i64,
 }
 
 fn file_name_ok(name: &str) -> bool {
@@ -214,6 +216,24 @@ pub fn compress(
         )?;
         fsx::rename_no_replace(&partial, &dest)?;
         let archive_bytes = std::fs::metadata(&dest)?.len();
+        // Remember what is inside, so the catalog can answer "where is X?".
+        let names: Vec<String> = manifest.iter().map(|m| zip_name(Path::new(&m.rel))).collect();
+        let catalog_id = crate::catalog::record(
+            conn,
+            &crate::catalog::NewArchive {
+                path: &dest,
+                source: Some(&req.source),
+                origin: "created",
+                archive_bytes,
+                verified: true,
+            },
+            manifest.iter().zip(&names).map(|(m, n)| crate::catalog::NewEntry {
+                rel_path: n,
+                size: m.size,
+                mtime: Some(m.mtime),
+                blake3: Some(m.hash.to_hex().to_string()),
+            }),
+        )?;
         let mut not_preserved = vec![
             "Permisos NTFS (ACL), atributos (oculto, sistema) y flujos alternativos de datos".to_string(),
             "Fecha de creación (se guarda la de modificación, con precisión de 2 segundos)".to_string(),
@@ -231,6 +251,7 @@ pub fn compress(
             potential_saving: bytes as i64 - archive_bytes as i64,
             verified: true,
             not_preserved,
+            catalog_id,
         })
     })();
     match &result {

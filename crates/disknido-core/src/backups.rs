@@ -39,7 +39,8 @@ fn month_of(tok: &str) -> Option<u32> {
     })
 }
 
-fn fold(s: &str) -> String {
+/// Lower-case and fold Spanish accents (á→a, ñ→n) for matching.
+pub(crate) fn fold(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             'á' | 'à' | 'ä' | 'â' | 'Á' | 'À' | 'Ä' | 'Â' => 'a',

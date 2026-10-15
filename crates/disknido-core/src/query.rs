@@ -53,6 +53,10 @@ impl PathResolver {
         Some(p)
     }
 
+    pub fn parent_of(&self, id: i64) -> Option<i64> {
+        self.dirs.get(&id).map(|d| d.0)
+    }
+
     pub fn file_path(&mut self, parent: i64, name: &str) -> Option<PathBuf> {
         Some(self.dir_path(parent)?.join(name))
     }
@@ -189,9 +193,38 @@ pub struct Bucket {
     pub bytes: u64,
 }
 
+/// Fills `ext_stats` for indexed roots that have none (indexes written by
+/// older versions). One range scan per root; runs once.
+fn backfill_ext_stats(conn: &Connection) -> Result<()> {
+    let missing: Vec<i64> = {
+        let mut st = conn.prepare(
+            "SELECT id FROM entries r WHERE parent_id=0 AND NOT EXISTS (SELECT 1 FROM ext_stats s WHERE s.root_id=r.id)",
+        )?;
+        st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
+    for id in missing {
+        let end: i64 = conn.query_row(
+            "SELECT COALESCE(MIN(id), 9223372036854775807) FROM entries WHERE parent_id=0 AND id>?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO ext_stats(root_id,ext,files,bytes)
+             SELECT ?1, COALESCE(ext,''), COUNT(*), SUM(size) FROM entries WHERE id>?1 AND id<?2 AND is_dir=0 GROUP BY ext",
+            params![id, end],
+        )?;
+        // A root with no files still gets a marker row so it is not rescanned.
+        conn.execute("INSERT OR IGNORE INTO ext_stats(root_id,ext,files,bytes) VALUES(?1,'',0,0)", [id])?;
+    }
+    Ok(())
+}
+
+/// Extension distribution from the per-root totals written at scan time.
 pub fn extensions(conn: &Connection, limit: i64) -> Result<Vec<Bucket>> {
+    backfill_ext_stats(conn)?;
     let mut st = conn.prepare(
-        "SELECT COALESCE(ext,''), COUNT(*), SUM(size) FROM entries WHERE is_dir=0 GROUP BY ext ORDER BY SUM(size) DESC LIMIT ?1",
+        "SELECT ext, SUM(files), SUM(bytes) FROM ext_stats WHERE root_id IN (SELECT id FROM entries WHERE parent_id=0)
+         GROUP BY ext HAVING SUM(files) > 0 ORDER BY SUM(bytes) DESC LIMIT ?1",
     )?;
     let v = st.query_map([limit], |r| {
         Ok(Bucket { key: r.get(0)?, files: r.get::<_, i64>(1)? as u64, bytes: r.get::<_, i64>(2)? as u64 })
@@ -281,6 +314,45 @@ pub struct OldFolder {
     pub top_extensions: Vec<Bucket>,
     pub protected_reason: Option<String>,
     pub mark: Option<String>,
+    /// Why this looks like an installed application or game (programs and
+    /// libraries inside, or a known launcher library). Shown separately: an
+    /// installed game is not an "old folder" to archive.
+    pub app_reason: Option<String>,
+}
+
+/// Folder names used by launchers and installers for installed software.
+const APP_LIBRARIES: &[&str] = &[
+    "steamapps",
+    "steamlibrary",
+    "epic games",
+    "gog games",
+    "gog galaxy",
+    "xboxgames",
+    "windowsapps",
+    "riot games",
+    "ea games",
+    "ubisoft game launcher",
+    "battle.net",
+    "program files",
+    "program files (x86)",
+];
+
+/// Folders whose subtree contains both programs (.exe) and libraries (.dll):
+/// a strong sign of an installed application or game. One pass over those
+/// files climbing to the root, so it scales to millions of entries.
+fn folders_with_programs(conn: &Connection, res: &PathResolver) -> Result<std::collections::HashSet<i64>> {
+    use std::collections::HashSet;
+    let (mut exe, mut dll): (HashSet<i64>, HashSet<i64>) = (HashSet::new(), HashSet::new());
+    let mut st = conn.prepare("SELECT parent_id, ext FROM entries WHERE is_dir=0 AND ext IN ('exe','dll')")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (mut dir, ext) = row?;
+        let set = if ext == "exe" { &mut exe } else { &mut dll };
+        while dir != 0 && set.insert(dir) {
+            dir = res.parent_of(dir).unwrap_or(0);
+        }
+    }
+    Ok(exe.intersection(&dll).copied().collect())
 }
 
 /// Folders whose newest file modification is older than `months`. Only the
@@ -291,6 +363,7 @@ pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize,
     let cutoff = now - months * 30 * 86_400;
     let mut res = PathResolver::load(conn)?;
     let marks = load_marks(conn)?;
+    let programs = folders_with_programs(conn, &res)?;
     let mut st = conn.prepare(&format!(
         "SELECT {VIEW_COLS}, oldest_mtime FROM entries
          WHERE is_dir=1 AND parent_id<>0 AND newest_mtime IS NOT NULL AND newest_mtime < ?1 AND total_size >= ?2
@@ -314,7 +387,16 @@ pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize,
         if mark.as_deref() == Some("excluded") || mark.as_deref() == Some("ignored") {
             continue;
         }
+        let key = safety::path_key(&path);
+        let app_reason = if let Some(lib) = APP_LIBRARIES.iter().find(|l| key.split('\\').any(|c| c == **l)) {
+            Some(format!("Está en una biblioteca de programas o juegos («{lib}»)"))
+        } else if programs.contains(&e.id) {
+            Some("Contiene programas (.exe) y bibliotecas (.dll): parece una aplicación o un juego instalado".to_string())
+        } else {
+            None
+        };
         out.push(OldFolder {
+            app_reason,
             months_idle: (now - e.newest_mtime.unwrap_or(now)) / (30 * 86_400),
             protected_reason: safety::protected_reason(&path, false),
             top_extensions: Vec::new(),

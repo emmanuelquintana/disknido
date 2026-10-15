@@ -110,6 +110,14 @@ principales. Acciones: importante, favorito, ignorar, excluir siempre,
 comprimir, buscar duplicados dentro. Windows no registra siempre el "último
 uso": se usa la fecha de modificación.
 
+## Catálogo de comprimidos
+
+Cada ZIP que crea DiskNido guarda aquí la lista de lo que contiene y dónde
+está el ZIP. Escribe en el buscador (sin importar mayúsculas ni acentos) para
+saber en qué ZIP está un archivo, sin abrir nada. Puedes añadir ZIP que ya
+tenías (*Añadir ZIP existentes…*), ver el contenido de cada uno, exportar su
+lista a CSV o quitarlo del catálogo (el ZIP no se toca).
+
 ## 9. Historial
 
 Cada operación (organizar, comprimir, Papelera, vaciar Papelera) con fecha,
