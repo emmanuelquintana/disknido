@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DiskNido",
+  "version": "0.1.0",
+  "identifier": "io.github.disknido",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "DiskNido",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 620,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "DiskNido contributors",
+    "copyright": "MIT License",
+    "category": "Utility",
+    "shortDescription": "Analiza, limpia y organiza tus discos de forma segura",
+    "longDescription": "DiskNido muestra qué ocupa tus discos, detecta duplicados exactos, imágenes de disco y respaldos, y los organiza o comprime con verificación. Todo se procesa localmente.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser", "languages": ["Spanish", "English"], "displayLanguageSelector": false },
+      "wix": { "language": ["es-ES", "en-US"] }
+    }
+  }
+}

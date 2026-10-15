@@ -91,7 +91,7 @@ fn old_folders_use_newest_file_time() {
     }
     scan(&db(tmp.path()), &data);
     let conn = db::open(&db(tmp.path())).unwrap();
-    let old = query::old_folders(&conn, 12, 1, 100).unwrap();
+    let old = query::old_folders(&conn, 12, 1, 100, true).unwrap();
     let names: Vec<&str> = old.iter().map(|o| o.entry.name.as_str()).collect();
     assert_eq!(names, vec!["old"], "a folder with one recent file is not old");
     assert!(old[0].months_idle >= 23);

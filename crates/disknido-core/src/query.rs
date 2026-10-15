@@ -267,7 +267,7 @@ pub struct OldFolder {
 /// Folders whose newest file modification is older than `months`. Only the
 /// top-most qualifying folder of each subtree is reported. Modification time
 /// is the only reliable signal Windows offers; "last used" is not known.
-pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize) -> Result<Vec<OldFolder>> {
+pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize, with_types: bool) -> Result<Vec<OldFolder>> {
     let now = crate::now_unix();
     let cutoff = now - months * 30 * 86_400;
     let mut res = PathResolver::load(conn)?;
@@ -306,7 +306,7 @@ pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize)
     }
     out.sort_by_key(|f| std::cmp::Reverse(f.entry.size));
     out.truncate(limit);
-    for f in &mut out {
+    for f in out.iter_mut().filter(|_| with_types) {
         f.top_extensions = subtree_extensions(conn, f.entry.id, 3)?;
     }
     Ok(out)

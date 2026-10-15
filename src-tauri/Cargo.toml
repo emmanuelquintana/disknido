@@ -1,0 +1,23 @@
+[package]
+name = "disknido"
+description = "DiskNido — understand, clean and organise your Windows drives safely."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "disknido_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.3", features = [] }
+
+[dependencies]
+disknido-core = { path = "../crates/disknido-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12.4", features = [] }
+tauri-plugin-dialog = "2.8.3"
+tauri-plugin-opener = "2.7.2"
