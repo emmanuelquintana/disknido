@@ -27,8 +27,9 @@ leer. Puedes **pausar**, **cancelar** (se conservan los resultados parciales)
 o cambiar de pantalla. La intensidad (bajo impacto / equilibrado / máximo) se
 cambia en Configuración.
 
-> Cada análisis reemplaza el índice anterior. Si quieres D: y E: a la vez,
-> selecciona ambas en el mismo análisis.
+> Cada análisis actualiza solo las unidades o carpetas que incluye: si
+> analizas D: hoy y E: mañana, las dos quedan en el índice, cada una con su
+> fecha de «Último análisis».
 
 ## 3. Explorador de espacio
 

@@ -178,7 +178,7 @@ export function DuplicatesPage() {
     api.exportDuplicates(path, settings.anonymizeReports).then(() => toast(t("settings.saved")), (e) => toast(errorText(e)));
   };
 
-  const roots = ov.data?.lastScan?.roots ?? [];
+  const roots = (ov.data?.roots ?? []).map((r) => r.name);
   const noScan = ov.data && !ov.data.lastScan;
   const frac = p && p.phase === "hashing" && p.bytesTotal ? p.bytesDone / p.bytesTotal : p && p.filesTotal ? p.filesDone / p.filesTotal : null;
 

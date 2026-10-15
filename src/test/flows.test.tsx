@@ -6,7 +6,7 @@ import { CategoryCard } from "../features/Cleanup";
 import { GroupCard } from "../features/Duplicates";
 import { HomePage } from "../features/Home";
 import { ScanPage } from "../features/Scan";
-import type { CleanupCategory, DupGroup, Overview, Volume } from "../types";
+import type { CleanupCategory, DupGroup, IndexedRoot, Overview, Volume } from "../types";
 import { mockCommands, renderApp } from "./utils";
 
 const vol = (letter: string, extra: Partial<Volume> = {}): Volume => ({
@@ -61,6 +61,38 @@ describe("home", () => {
     expect(screen.getByText("HDD")).toBeInTheDocument();
     expect(screen.getAllByRole("progressbar")[0]).toHaveAttribute("aria-valuenow", "75");
     expect(await screen.findByText("Empieza con un análisis")).toBeInTheDocument();
+  });
+
+  it("dates each drive by the scan that last indexed it", async () => {
+    const root = (name: string, id: number, scannedAt: number): IndexedRoot => ({
+      id,
+      parentId: 0,
+      name,
+      path: name,
+      isDir: true,
+      size: 0,
+      fileCount: 0,
+      mtime: 0,
+      newestMtime: null,
+      attrs: 0,
+      cloudOnly: false,
+      isLink: false,
+      scanId: id,
+      scannedAt,
+      scanStatus: "done",
+    });
+    const d = Date.UTC(2026, 0, 10) / 1000;
+    const e = Date.UTC(2026, 5, 20) / 1000;
+    const scanInfo = { id: 2, startedAt: e, finishedAt: e, status: "done", mode: "full", roots: ["E:\\"], files: 0, dirs: 0, bytes: 0, errors: 0 };
+    mockCommands({
+      list_volumes: [vol("D"), vol("E"), vol("F")],
+      overview: { ...emptyOverview, lastScan: scanInfo, roots: [root("D:\\", 1, d), root("E:\\", 2, e)] },
+    });
+    renderApp(<HomePage />);
+    await waitFor(() => expect(screen.getAllByText(/Último análisis/)).toHaveLength(2));
+    const dates = screen.getAllByText(/Último análisis/).map((n) => n.textContent);
+    expect(new Set(dates).size).toBe(2);
+    expect(screen.getAllByText("Sin analizar")).toHaveLength(1);
   });
 });
 

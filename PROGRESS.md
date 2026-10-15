@@ -1,13 +1,13 @@
 # Progress log
 
-Real state of the project. Updated 2026-10-14.
+Real state of the project. Updated 2026-10-15.
 
 ## Phases
 
 | Phase | State | Evidence |
 | --- | --- | --- |
 | 1. Research & architecture | done | `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` |
-| 2. Scanner | done | `scan.rs`, `fsx.rs`, `volumes.rs`; `tests/scanner.rs` (5) |
+| 2. Scanner | done | `scan.rs`, `fsx.rs`, `volumes.rs`; `tests/scanner.rs` (9, incl. per-root replacement) |
 | 3. Duplicates | done | `duplicates.rs`; `tests/duplicates.rs` (4, incl. real Recycle Bin round-trip when `DISKNIDO_TEST_RECYCLE=1`) |
 | 4. Backups | done (same-volume) | `backups.rs`, `organize.rs`; `tests/backups_organize.rs` (4) |
 | 5. Compression | done (ZIP) | `compress.rs`; `tests/compression.rs` (5) |
@@ -28,6 +28,22 @@ Real state of the project. Updated 2026-10-14.
   organisation of 11 backups + undo, verified ZIP, old folders, history, dark
   theme. Found and fixed: inferred content dates were preselected for
   organisation; grid overflow; card spacing in grids.
+
+## Per-root index (2026-10-15)
+
+Acceptance criterion "Puedo seleccionar D: y E: y analizarlas por separado o
+juntas" now holds for separate scans: a scan replaces only the indexed roots
+it walks (and roots overlapping them); other drives stay. Schema v2 adds
+`entries.scan_id` on root rows; Home shows each drive's own last-analysis
+date. Design in `docs/SCANNER.md#per-root-replacement`.
+
+* `cargo test -p disknido-core` → 28 unit + 22 integration, all passing
+  (new: scan A then B keeps both, rescan A replaces only A, overlapping roots
+  replace each other, cancelled scan keeps unreached roots, v1→v2 migration,
+  nested request roots de-duplicated).
+* `cargo clippy --workspace --all-targets -D warnings`, `cargo fmt --check` →
+  clean. `pnpm typecheck`, `pnpm lint` → clean; `pnpm test` → 15 passing.
+* Not yet re-checked end-to-end on the real app or against a real D:/E:.
 
 ## Dependency audit
 
@@ -51,7 +67,7 @@ See `docs/DECISIONS.md`.
 ## Pending / known gaps
 
 * 1 M-entry benchmark (generator ready; not enough free disk on the test PC).
-* Several indexes at once (a new scan replaces the index).
+* Duplicate results are still replaced per search (a full analysis of E: drops D:'s groups); see docs/LIMITATIONS.md.
 * Cross-volume verified moves; allocated-size accounting; ARM64; signing.
 * Start-with-Windows and notification settings (not implemented).
 * The `v0.1.0` GitHub Release is a **draft**: install the CI-built setup on a clean Windows PC (see docs/RELEASING.md) before publishing it.

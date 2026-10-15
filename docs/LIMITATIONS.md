@@ -7,9 +7,16 @@
   is not computed yet.
 * **"Last used" is unknown.** Windows does not reliably record last access;
   old-folder detection uses the newest modification time inside the folder.
-* **One index at a time.** A new scan replaces the previous index (history of
-  scans is kept). Scanning D: then E: separately keeps only E:; select both in
-  one scan to keep both.
+* **A scan replaces overlapping roots whole.** Scanning D: and then E:
+  separately keeps both; re-scanning D: replaces only D:. But a root that
+  overlaps an indexed one replaces it entirely: scanning `D:\Fotos` after
+  `D:\` leaves only `D:\Fotos` indexed for that drive (no file is ever indexed
+  twice). Cancelling keeps the old index of roots the scan had not reached; a
+  root whose walk was cancelled keeps only its partial new results.
+* **Duplicate results cover one search.** Each duplicate search replaces the
+  previous groups, and a full analysis searches only the roots it scanned, so
+  after a full analysis of E: the duplicate list no longer shows D:'s groups.
+  Run a duplicate search with "all" as scope to cover every indexed drive.
 * **Organisation is per volume.** Cross-volume moves (verified copy then
   remove) are not implemented.
 * **Recycle Bin paths limited to MAX_PATH** (Windows shell API). Longer paths

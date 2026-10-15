@@ -136,7 +136,7 @@ fn start_scan(app: AppHandle, state: State<AppState>, request: scan::ScanRequest
 #[serde(rename_all = "camelCase")]
 struct Overview {
     last_scan: Option<query::ScanInfo>,
-    roots: Vec<query::EntryView>,
+    roots: Vec<query::IndexedRoot>,
     categories: Vec<query::Bucket>,
     extensions: Vec<query::Bucket>,
     duplicate_groups: u64,
@@ -160,7 +160,7 @@ async fn overview(state: State<'_, AppState>, root_name: String) -> CmdResult<Ov
     let old = query::old_folders(&conn, 12, 100 * 1024 * 1024, 100_000, false)?;
     Ok(Overview {
         last_scan: query::last_scan(&conn)?,
-        roots: query::roots(&conn)?,
+        roots: query::indexed_roots(&conn)?,
         categories: query::categories(&conn)?,
         extensions: query::extensions(&conn, 12)?,
         duplicate_groups,

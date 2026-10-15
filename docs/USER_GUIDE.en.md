@@ -16,8 +16,9 @@ Pick **Quick** (sizes, dates, types), **Full** (plus exact duplicate search
 when it finishes) or **Custom** (specific folders), select drives (network
 drives are never included automatically) and start. You see phase, files,
 folders, data, time and unreadable folders; you can pause, cancel (partial
-results are kept) or switch screens. Each analysis replaces the previous index
-— select several drives in one analysis to keep them together.
+results are kept) or switch screens. An analysis updates only the drives or
+folders it covers: analyse D: today and E: tomorrow and both stay in the
+index, each with its own "last analysis" date.
 
 ## 3. Space explorer
 Browse drive → folder → file as a **map** (areas proportional to size) or a

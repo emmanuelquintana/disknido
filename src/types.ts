@@ -54,6 +54,13 @@ export interface EntryView {
   isLink: boolean;
 }
 
+/** An indexed root with the scan that last walked it. */
+export interface IndexedRoot extends EntryView {
+  scanId: number | null;
+  scannedAt: number | null;
+  scanStatus: string | null;
+}
+
 export interface Bucket {
   key: string;
   files: number;
@@ -80,7 +87,7 @@ export interface BinInfo {
 
 export interface Overview {
   lastScan: ScanInfo | null;
-  roots: EntryView[];
+  roots: IndexedRoot[];
   categories: Bucket[];
   extensions: Bucket[];
   duplicateGroups: number;

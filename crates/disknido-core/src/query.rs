@@ -106,6 +106,33 @@ pub fn roots(conn: &Connection) -> Result<Vec<EntryView>> {
     Ok(v.collect::<rusqlite::Result<_>>()?)
 }
 
+/// An indexed root with the scan that last walked it (roots can come from
+/// different scans: each scan replaces only the roots it walks).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexedRoot {
+    #[serde(flatten)]
+    pub entry: EntryView,
+    pub scan_id: Option<i64>,
+    /// When that scan finished (its start if it never finished).
+    pub scanned_at: Option<i64>,
+    pub scan_status: Option<String>,
+}
+
+pub fn indexed_roots(conn: &Connection) -> Result<Vec<IndexedRoot>> {
+    let mut st = conn.prepare(&format!(
+        "SELECT {VIEW_COLS}, scan_id,
+                (SELECT COALESCE(s.finished_at, s.started_at) FROM scans s WHERE s.id=entries.scan_id),
+                (SELECT s.status FROM scans s WHERE s.id=entries.scan_id)
+         FROM entries WHERE parent_id=0 ORDER BY id"
+    ))?;
+    let v = st.query_map([], |r| {
+        let name: String = r.get(2)?;
+        Ok(IndexedRoot { entry: view(r, name)?, scan_id: r.get(9)?, scanned_at: r.get(10)?, scan_status: r.get(11)? })
+    })?;
+    Ok(v.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Children of a folder sorted by size (largest first), paginated.
 pub fn children(conn: &Connection, parent_id: i64, offset: i64, limit: i64) -> Result<(Vec<EntryView>, i64)> {
     let parent_path = entry_path(conn, parent_id)?.unwrap_or_default();

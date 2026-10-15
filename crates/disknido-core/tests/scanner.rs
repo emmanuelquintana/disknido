@@ -97,6 +97,119 @@ fn old_folders_use_newest_file_time() {
     assert!(old[0].months_idle >= 23);
 }
 
+/// Every child id is larger than its parent's and every parent exists.
+fn assert_tree_invariants(conn: &rusqlite::Connection) {
+    let bad: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM entries c LEFT JOIN entries p ON p.id=c.parent_id
+             WHERE c.parent_id<>0 AND (p.id IS NULL OR c.id <= p.id)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad, 0, "orphans or child ids not above their parent");
+}
+
+fn root_sizes(conn: &rusqlite::Connection) -> Vec<(String, u64, Option<i64>)> {
+    query::indexed_roots(conn).unwrap().into_iter().map(|r| (r.entry.name, r.entry.size, r.scan_id)).collect()
+}
+
+#[test]
+fn separate_scans_keep_other_roots() {
+    let tmp = fixture_root();
+    let (a, b) = (tmp.path().join("A"), tmp.path().join("B"));
+    write(&a.join("x/1.bin"), &bytes(1, 100));
+    write(&b.join("2.bin"), &bytes(2, 30));
+    let db_path = db(tmp.path());
+    let sa = scan(&db_path, &a);
+    let sb = scan(&db_path, &b);
+
+    let conn = db::open(&db_path).unwrap();
+    let roots = root_sizes(&conn);
+    let name = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    assert_eq!(roots, vec![(name(&a), 100, Some(sa.scan_id)), (name(&b), 30, Some(sb.scan_id))]);
+    assert_tree_invariants(&conn);
+    // Global views see both roots.
+    let files = query::largest_files(&conn, 10).unwrap();
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().any(|f| f.path.starts_with(&name(&a))));
+    assert!(files.iter().any(|f| f.path.starts_with(&name(&b))));
+    // A's folder totals survive B's scan (B's aggregation touches only B).
+    let (kids, _) = query::children(&conn, query::roots(&conn).unwrap()[0].id, 0, 10).unwrap();
+    assert_eq!((kids[0].name.as_str(), kids[0].size), ("x", 100));
+}
+
+#[test]
+fn rescan_replaces_only_that_root() {
+    let tmp = fixture_root();
+    let (a, b) = (tmp.path().join("A"), tmp.path().join("B"));
+    write(&a.join("old.bin"), &bytes(1, 100));
+    write(&b.join("sub/2.bin"), &bytes(2, 30));
+    let db_path = db(tmp.path());
+    scan(&db_path, &a);
+    let sb = scan(&db_path, &b);
+    std::fs::remove_file(a.join("old.bin")).unwrap();
+    write(&a.join("new/n.bin"), &bytes(3, 7));
+    let sa2 = scan(&db_path, &a);
+    assert_eq!((sa2.files, sa2.bytes), (1, 7));
+
+    let conn = db::open(&db_path).unwrap();
+    let name = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    // B (now first by id) is untouched; A was replaced, not duplicated.
+    assert_eq!(root_sizes(&conn), vec![(name(&b), 30, Some(sb.scan_id)), (name(&a), 7, Some(sa2.scan_id))]);
+    assert!(query::search(&conn, "old.bin", 10).unwrap().is_empty(), "stale rows of A are gone");
+    assert_eq!(query::search(&conn, "2.bin", 10).unwrap().len(), 1);
+    assert_tree_invariants(&conn);
+}
+
+#[test]
+fn overlapping_roots_replace_each_other() {
+    let tmp = fixture_root();
+    let data = tmp.path().join("data");
+    write(&data.join("in/1.bin"), &bytes(1, 10));
+    write(&data.join("2.bin"), &bytes(2, 20));
+    let db_path = db(tmp.path());
+    scan(&db_path, &data.join("in"));
+    scan(&db_path, &data); // contains the earlier root
+    let conn = db::open(&db_path).unwrap();
+    let roots = root_sizes(&conn);
+    assert_eq!(roots.len(), 1, "no file is indexed twice");
+    assert_eq!(roots[0].1, 30);
+    drop(conn);
+    scan(&db_path, &data.join("in")); // inside the indexed root
+    let conn = db::open(&db_path).unwrap();
+    let roots = root_sizes(&conn);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].1, 10);
+    assert_tree_invariants(&conn);
+}
+
+#[test]
+fn multi_root_scan_and_cancel_keep_unreached_roots() {
+    let tmp = fixture_root();
+    let (a, b) = (tmp.path().join("A"), tmp.path().join("B"));
+    write(&a.join("1.bin"), &bytes(1, 10));
+    write(&b.join("2.bin"), &bytes(2, 20));
+    let db_path = db(tmp.path());
+    let req = |roots: Vec<std::path::PathBuf>| scan::ScanRequest {
+        roots,
+        mode: "full".into(),
+        profile: Default::default(),
+        exclusions: vec![],
+        include_hidden: true,
+    };
+    let s = scan::run_scan(&db_path, &req(vec![a.clone(), b.clone()]), &Control::default(), &|_| {}).unwrap();
+    assert_eq!((s.files, s.bytes), (2, 30));
+    // A cancelled scan replaces nothing it did not start walking.
+    let c = Control::default();
+    c.cancel();
+    scan::run_scan(&db_path, &req(vec![b.clone()]), &c, &|_| {}).unwrap();
+    let conn = db::open(&db_path).unwrap();
+    let sizes: Vec<u64> = root_sizes(&conn).into_iter().map(|r| r.1).collect();
+    assert_eq!(sizes, vec![10, 20]);
+    assert_tree_invariants(&conn);
+}
+
 #[test]
 fn rescan_replaces_index() {
     let tmp = fixture_root();

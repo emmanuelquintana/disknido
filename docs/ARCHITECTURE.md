@@ -51,7 +51,8 @@ See [DECISIONS.md](DECISIONS.md) for the full log. The short version:
 * **Ids encode the hierarchy.** Ids are assigned while walking, so a child's id
   is always larger than its parent's. Folder totals are one reverse pass over
   an array — no recursive SQL, no second walk.
-* **The index is replaceable.** Each scan replaces `entries`; history,
+* **The index is replaceable per root.** Each scan replaces, in `entries`,
+  only the roots it walks (and indexed roots overlapping them); history,
   duplicates, marks and operations survive. "Reset index" never touches files.
 * **Rust is the authority.** Every mutating command re-validates paths
   (protected locations, `..`, junctions on the path, cloud-only, size/mtime

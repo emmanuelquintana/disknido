@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- A scan replaces only the drives/folders it covers: analysing D: and then E:
+  separately keeps both in the index. Each drive shows its own last-analysis
+  date. Index schema v2 (`entries.scan_id`), migrated automatically.
+
 ## [0.1.0] — unreleased
 
 First functional version.

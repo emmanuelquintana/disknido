@@ -1,5 +1,6 @@
-//! SQLite index. One active file index (`entries`) replaced by each scan;
-//! scans, duplicates, operations and user marks persist across scans.
+//! SQLite index. One file index (`entries`) holding every scanned root; a
+//! scan replaces only the roots it walks. Scans, duplicates, operations and
+//! user marks persist across scans.
 //! Migrations are versioned through `PRAGMA user_version`.
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -107,6 +108,13 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     "#,
+    // v2: per-root replacement. Root rows (parent_id = 0) record the scan
+    // that produced them; other rows leave it NULL. A v1 index came entirely
+    // from the most recent scan.
+    r#"
+    ALTER TABLE entries ADD COLUMN scan_id INTEGER;
+    UPDATE entries SET scan_id = (SELECT MAX(id) FROM scans) WHERE parent_id = 0;
+    "#,
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -180,5 +188,26 @@ mod tests {
         let c = super::open_in_memory().unwrap();
         super::migrate(&c).unwrap();
         assert_eq!(super::schema_version(&c).unwrap(), super::MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn v1_index_roots_get_the_last_scan() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(super::MIGRATIONS[0]).unwrap();
+        c.execute_batch(
+            "PRAGMA user_version = 1;
+             INSERT INTO scans(id,started_at,status,mode,roots) VALUES(1,1,'done','full','[]'),(2,2,'done','full','[]');
+             INSERT INTO entries(id,parent_id,name,is_dir,size,mtime,ctime,attrs) VALUES(1,0,'D:\\',1,0,0,0,0),(2,1,'a',0,5,0,0,0);",
+        )
+        .unwrap();
+        super::migrate(&c).unwrap();
+        let ids: Vec<Option<i64>> = c
+            .prepare("SELECT scan_id FROM entries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ids, vec![Some(2), None]);
     }
 }

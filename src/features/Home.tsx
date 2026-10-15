@@ -54,7 +54,12 @@ export function HomePage() {
   const scanning = isRunning(latest("scan"));
   const ov = useAsync(() => (scanning ? Promise.resolve(null) : api.overview(settings.rootName)), [indexVersion, scanning, settings.rootName]);
   const last = ov.data?.lastScan;
-  const scannedRoots = new Set((last?.roots ?? []).map((r) => r.slice(0, 2).toUpperCase()));
+  // Drives can come from different scans: use each drive's latest indexed root.
+  const scannedAt = new Map<string, number>();
+  for (const r of ov.data?.roots ?? []) {
+    const letter = r.name.slice(0, 2).toUpperCase();
+    if (r.scannedAt != null && r.scannedAt > (scannedAt.get(letter) ?? 0)) scannedAt.set(letter, r.scannedAt);
+  }
 
   return (
     <>
@@ -75,7 +80,7 @@ export function HomePage() {
             <DriveCard
               key={v.root}
               v={v}
-              lastScanned={scannedRoots.has(v.letter.toUpperCase()) ? last?.finishedAt : null}
+              lastScanned={scannedAt.get(v.letter.toUpperCase()) ?? null}
               onAnalyze={() => navigate("scan", { drive: v.root })}
             />
           ))}
