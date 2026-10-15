@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3D7BF2"/>
+      <stop offset="1" stop-color="#2353C4"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <!-- the egg: a disk resting in the nest -->
+  <circle cx="512" cy="440" r="168" fill="#FFFFFF"/>
+  <circle cx="512" cy="440" r="48" fill="#2D63DA"/>
+  <!-- the nest: a woven bowl in front of the disk -->
+  <path d="M212 520 C 250 790, 774 790, 812 520 C 700 590, 324 590, 212 520 Z" fill="#DCE7FF"/>
+  <path d="M262 590 C 400 630, 624 630, 762 590" fill="none" stroke="#2D63DA" stroke-opacity="0.55" stroke-width="22" stroke-linecap="round"/>
+  <path d="M300 660 C 420 690, 604 690, 724 660" fill="none" stroke="#2D63DA" stroke-opacity="0.55" stroke-width="22" stroke-linecap="round"/>
+</svg>
