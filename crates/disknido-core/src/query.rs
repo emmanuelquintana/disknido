@@ -121,14 +121,6 @@ pub fn children(conn: &Connection, parent_id: i64, offset: i64, limit: i64) -> R
     Ok((v.collect::<rusqlite::Result<_>>()?, total))
 }
 
-pub fn entry(conn: &Connection, id: i64) -> Result<Option<EntryView>> {
-    let path = match entry_path(conn, id)? {
-        Some(p) => p.to_string_lossy().into_owned(),
-        None => return Ok(None),
-    };
-    Ok(conn.query_row(&format!("SELECT {VIEW_COLS} FROM entries WHERE id=?1"), [id], |r| view(r, path.clone())).optional()?)
-}
-
 pub fn largest_files(conn: &Connection, limit: i64) -> Result<Vec<EntryView>> {
     let mut res = PathResolver::load(conn)?;
     let mut st = conn.prepare(&format!("SELECT {VIEW_COLS} FROM entries WHERE is_dir=0 ORDER BY size DESC LIMIT ?1"))?;
@@ -306,8 +298,10 @@ pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize,
     }
     out.sort_by_key(|f| std::cmp::Reverse(f.entry.size));
     out.truncate(limit);
-    for f in out.iter_mut().filter(|_| with_types) {
-        f.top_extensions = subtree_extensions(conn, f.entry.id, 3)?;
+    if with_types {
+        for f in &mut out {
+            f.top_extensions = subtree_extensions(conn, f.entry.id, 3)?;
+        }
     }
     Ok(out)
 }

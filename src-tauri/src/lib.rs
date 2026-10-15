@@ -2,11 +2,10 @@
 //! thread and streams progress as `task://progress` / `task://done` events.
 //! Every mutating command goes through the engine's safety checks.
 
-use disknido_core::{
-    Control, Error, backups, cleanup, compress, db, duplicates, images, ops, organize, query, recycle, safety, scan,
-    volumes,
-};
 use disknido_core::rusqlite::Connection;
+use disknido_core::{
+    Control, Error, backups, cleanup, compress, db, duplicates, images, ops, organize, query, recycle, safety, scan, volumes,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -112,11 +111,6 @@ fn pause_task(state: State<AppState>, task_id: String, paused: bool) {
     }
 }
 
-#[tauri::command]
-fn running_tasks(state: State<AppState>) -> Vec<String> {
-    state.tasks.lock().unwrap().keys().cloned().collect()
-}
-
 // ---------- volumes & scan ----------
 
 #[tauri::command]
@@ -182,15 +176,14 @@ async fn overview(state: State<'_, AppState>, root_name: String) -> CmdResult<Ov
 }
 
 #[tauri::command]
-async fn children(state: State<'_, AppState>, parent_id: i64, offset: i64, limit: i64) -> CmdResult<(Vec<query::EntryView>, i64)> {
+async fn children(
+    state: State<'_, AppState>,
+    parent_id: i64,
+    offset: i64,
+    limit: i64,
+) -> CmdResult<(Vec<query::EntryView>, i64)> {
     ensure_index_idle(&state)?;
     query::children(&state.conn(), parent_id, offset.max(0), limit.clamp(1, 2000))
-}
-
-#[tauri::command]
-async fn entry(state: State<'_, AppState>, id: i64) -> CmdResult<Option<query::EntryView>> {
-    ensure_index_idle(&state)?;
-    query::entry(&state.conn(), id)
 }
 
 #[tauri::command]
@@ -237,11 +230,6 @@ fn set_mark(state: State<AppState>, path: PathBuf, mark: Option<String>) -> CmdR
     query::set_mark(&state.conn(), &path, mark.as_deref())
 }
 
-#[tauri::command]
-fn marks(state: State<AppState>) -> CmdResult<HashMap<String, String>> {
-    query::load_marks(&state.conn())
-}
-
 // ---------- duplicates ----------
 
 #[tauri::command]
@@ -259,7 +247,12 @@ async fn duplicate_groups(state: State<'_, AppState>, offset: i64, limit: i64) -
 }
 
 #[tauri::command]
-async fn recycle_duplicates(state: State<'_, AppState>, group_id: i64, keep: PathBuf, remove: Vec<PathBuf>) -> CmdResult<recycle::RecycleResult> {
+async fn recycle_duplicates(
+    state: State<'_, AppState>,
+    group_id: i64,
+    keep: PathBuf,
+    remove: Vec<PathBuf>,
+) -> CmdResult<recycle::RecycleResult> {
     let conn = state.conn();
     recycle::recycle_duplicates(&conn, group_id, &keep, &remove, &Control::default())
 }
@@ -468,19 +461,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cancel_task,
             pause_task,
-            running_tasks,
             list_volumes,
             start_scan,
             overview,
             children,
-            entry,
             largest,
             search,
             subtree_extensions,
             scan_errors,
             old_folders,
             set_mark,
-            marks,
             start_duplicates,
             duplicate_groups,
             recycle_duplicates,

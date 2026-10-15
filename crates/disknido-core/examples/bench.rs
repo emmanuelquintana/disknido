@@ -78,7 +78,10 @@ fn demo(dir: &Path) {
         ("Varios/Mis Archivos Diciembre 2025", 2),
     ] {
         for i in 0..n {
-            w(&format!("{folder}/documentos/informe_{i}.txt"), &"Informe sintético de prueba.\n".repeat(2000 + i * 300).into_bytes());
+            w(
+                &format!("{folder}/documentos/informe_{i}.txt"),
+                &"Informe sintético de prueba.\n".repeat(2000 + i * 300).into_bytes(),
+            );
             w(&format!("{folder}/fotos/IMG_{i:04}.jpg"), &blob(400_000 + i * 50_000));
         }
     }
@@ -94,7 +97,10 @@ fn demo(dir: &Path) {
     iso[0x8028..0x8028 + 21].copy_from_slice(b"CCSA_X64FRE_ES-ES_DV9");
     iso.extend(blob(6 * 1024 * 1024));
     w("Imagenes/Windows 11.iso", &iso);
-    w("Imagenes/Juegos/Aventura (Disco 1).cue", b"FILE \"Aventura (Disco 1).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n");
+    w(
+        "Imagenes/Juegos/Aventura (Disco 1).cue",
+        b"FILE \"Aventura (Disco 1).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n",
+    );
     w("Imagenes/Juegos/Aventura (Disco 1).bin", &blob(9 * 1024 * 1024));
     w("Imagenes/Juegos/Carreras.rvz", &blob(7 * 1024 * 1024));
     w("Imagenes/Juegos/Plataformas.chd", &blob(5 * 1024 * 1024));
@@ -132,7 +138,13 @@ fn run(dir: &Path, profile: Profile) {
     for ext in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{ext}", db_path.display()));
     }
-    let req = scan::ScanRequest { roots: vec![dir.to_path_buf()], mode: "full".into(), profile, exclusions: vec![], include_hidden: true };
+    let req = scan::ScanRequest {
+        roots: vec![dir.to_path_buf()],
+        mode: "full".into(),
+        profile,
+        exclusions: vec![],
+        include_hidden: true,
+    };
     let (s, scan_ms) = time(|| scan::run_scan(&db_path, &req, &Control::default(), &|_| {}).unwrap());
     let dreq = duplicates::DupRequest { min_size: 1, scopes: vec![], profile };
     let (d, dup_ms) = time(|| duplicates::find_duplicates(&db_path, &dreq, &Control::default(), &|_| {}).unwrap());
@@ -146,7 +158,8 @@ fn run(dir: &Path, profile: Profile) {
     let (_, q_old) = time(|| query::old_folders(&conn, 12, 0, 500, false).unwrap());
     let (_, q_search) = time(|| query::search(&conn, "file_00012", 100).unwrap());
     drop(conn);
-    let index_bytes: u64 = ["", "-wal"].iter().filter_map(|e| std::fs::metadata(format!("{}{e}", db_path.display())).ok()).map(|m| m.len()).sum();
+    let index_bytes: u64 =
+        ["", "-wal"].iter().filter_map(|e| std::fs::metadata(format!("{}{e}", db_path.display())).ok()).map(|m| m.len()).sum();
     let out = serde_json::json!({
         "profile": format!("{profile:?}"),
         "files": s.files, "dirs": s.dirs, "bytes": s.bytes,

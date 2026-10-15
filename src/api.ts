@@ -11,7 +11,6 @@ export const api = {
   overview: (rootName: string) => invoke<T.Overview>("overview", { rootName }),
   children: (parentId: number, offset: number, limit: number) =>
     invoke<[T.EntryView[], number]>("children", { parentId, offset, limit }),
-  entry: (id: number) => invoke<T.EntryView | null>("entry", { id }),
   largest: (limit: number) => invoke<[T.EntryView[], T.EntryView[]]>("largest", { limit }),
   search: (needle: string, limit: number) => invoke<T.EntryView[]>("search", { needle, limit }),
   subtreeExtensions: (id: number) => invoke<T.Bucket[]>("subtree_extensions", { id }),
