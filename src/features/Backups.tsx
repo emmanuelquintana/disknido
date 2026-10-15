@@ -487,7 +487,7 @@ export function Compress({ items, initialSource }: { items: BackupItem[]; initia
       <div className="card stack">
         <h2 className="section-title">{t("compress.title")}</h2>
         <Notice>{t("compress.explain")}</Notice>
-        <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="grid grid-2" style={{ gap: 12 }}>
           <label className="field">
             <span>{t("compress.source")}</span>
             <div className="row">
@@ -623,8 +623,15 @@ export function BackupsPage() {
   const list = useAsync(() => (scanning ? Promise.resolve(null) : api.backupsList(settings.rootName)), [indexVersion, settings.rootName, scanning]);
   const items = useMemo(() => list.data ?? [], [list.data]);
   const [selected, setSelected] = useState<Set<string> | null>(null);
-  // Default plan selection: unorganised backups with a full date.
-  const sel = selected ?? new Set(items.filter((i) => !i.organized && !i.protectedReason && i.year && i.month && !i.ambiguous).map((i) => i.path));
+  // Default plan selection: unorganised backups whose year and month come
+  // from the name or from the user — never from an inferred content date.
+  const sel =
+    selected ??
+    new Set(
+      items
+        .filter((i) => !i.organized && !i.protectedReason && i.year && i.month && !i.ambiguous && (i.dateSource === "name" || i.dateSource === "override"))
+        .map((i) => i.path),
+    );
 
   return (
     <>

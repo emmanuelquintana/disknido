@@ -255,7 +255,7 @@ export function ExplorerPage() {
         <div>{selected ? <Properties e={selected} /> : <div className="card muted">{t("explorer.selectHint")}</div>}</div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", marginTop: 16 }}>
+      <div className="grid grid-2" style={{ marginTop: 16 }}>
         <div className="card">
           <h2 className="section-title">{t("explorer.byCategory")}</h2>
           <BucketBars buckets={(overview.data?.categories ?? []).map((b) => ({ ...b, label: t(`cat.${b.key}` as Key) }))} />

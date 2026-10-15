@@ -28,3 +28,5 @@ src-tauri/target/
 # Benchmarks output
 benchmarks/results/*.json
 !benchmarks/results/.gitkeep
+
+*.tsbuildinfo

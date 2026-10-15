@@ -78,12 +78,11 @@ export function Treemap({ items, onOpen, label }: { items: TreemapItem[]; onOpen
     <div className="treemap" role="group" aria-label={label}>
       {shown.map((it, k) => {
         const r = rects[k]!;
-        const tone = it.isDir ? (k % 3 === 0 ? "var(--seg-3)" : k % 3 === 1 ? "var(--accent-soft)" : "var(--surface)") : "var(--surface-2)";
         return (
           <button
             key={it.id}
-            className="tile"
-            style={{ left: `${(r.x / W) * 100}%`, top: `${(r.y / H) * 100}%`, width: `${(r.w / W) * 100}%`, height: `${(r.h / H) * 100}%`, background: tone }}
+            className={`tile ${it.isDir ? "dir" : "file"}`}
+            style={{ left: `${(r.x / W) * 100}%`, top: `${(r.y / H) * 100}%`, width: `${(r.w / W) * 100}%`, height: `${(r.h / H) * 100}%` }}
             title={`${it.name} — ${formatBytes(it.size, lang)}`}
             aria-label={`${it.name}, ${formatBytes(it.size, lang)}`}
             onClick={() => onOpen(it)}
