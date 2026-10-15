@@ -4,7 +4,7 @@
 
 | Tool | Version used | Notes |
 | --- | --- | --- |
-| Rust | stable 1.99 (MSRV 1.85, edition 2024) | `rustup` with the MSVC host |
+| Rust | stable 1.99 (MSRV 1.88, edition 2024) | `rustup` with the MSVC host |
 | Visual Studio Build Tools | 2022 or 2026 with "Desktop development with C++" | MSVC linker + Windows SDK |
 | Node.js | 24 LTS | |
 | pnpm | 10.x | `corepack enable` or `npm i -g pnpm` |

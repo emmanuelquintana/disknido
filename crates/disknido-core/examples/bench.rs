@@ -33,7 +33,7 @@ fn generate(dir: &Path, files: usize) {
         }
         let r = rng(&mut seed);
         let path = folder.join(format!("file_{i:07}.{}", ["txt", "jpg", "bin", "pdf", "dat"][(r % 5) as usize]));
-        let data = if r % 20 == 0 && !originals.is_empty() {
+        let data = if r.is_multiple_of(20) && !originals.is_empty() {
             originals[(r as usize / 20) % originals.len()].1.clone()
         } else if r % 50 == 1 && !originals.is_empty() {
             let mut d = originals[(r as usize / 50) % originals.len()].1.clone();
@@ -46,7 +46,7 @@ fn generate(dir: &Path, files: usize) {
             (0..len).map(|_| rng(&mut seed) as u8).collect()
         };
         std::fs::write(&path, &data).unwrap();
-        if originals.len() < 2000 && r % 7 == 0 {
+        if originals.len() < 2000 && r.is_multiple_of(7) {
             originals.push((path, data));
         }
     }

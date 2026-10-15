@@ -326,7 +326,7 @@ pub fn find_duplicates(
         }
         let _ = control.checkpoint();
         let d = done.fetch_add(1, Ordering::Relaxed);
-        if d % 64 == 0 {
+        if d.is_multiple_of(64) {
             progress("partial", d, total, 0, 0);
         }
         if let Some(h) = cached(&db.lock().unwrap(), c, "partial") {
@@ -369,7 +369,7 @@ pub fn find_duplicates(
             return None;
         }
         let d = done.fetch_add(1, Ordering::Relaxed);
-        if d % 16 == 0 {
+        if d.is_multiple_of(16) {
             progress("hashing", d, total, bytes_done.load(Ordering::Relaxed), bytes_total);
         }
         if c.size <= 2 * PARTIAL {

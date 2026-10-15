@@ -148,15 +148,17 @@ pub fn list(conn: &Connection, read_headers: bool) -> Result<Vec<DiskImage>> {
             img.hint = Some(hint.into());
             img.evidence = Some(format!("Formato .{ext}, propio de esa plataforma"));
         }
-        if read_headers && !cloud_only && ext == "iso" {
-            if let Some(label) = iso_label(&path) {
-                if let Some(h) = os_hint(&label) {
-                    img.kind = "operatingSystem".into();
-                    img.hint = Some(h.into());
-                    img.evidence = Some(format!("Etiqueta de volumen «{label}»"));
-                }
-                img.volume_label = Some(label);
+        if read_headers
+            && !cloud_only
+            && ext == "iso"
+            && let Some(label) = iso_label(&path)
+        {
+            if let Some(h) = os_hint(&label) {
+                img.kind = "operatingSystem".into();
+                img.hint = Some(h.into());
+                img.evidence = Some(format!("Etiqueta de volumen «{label}»"));
             }
+            img.volume_label = Some(label);
         }
         let siblings = &by_folder[parent];
         let stem = Path::new(name).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
