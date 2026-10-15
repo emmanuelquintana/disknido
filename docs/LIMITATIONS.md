@@ -17,6 +17,10 @@
   previous groups, and a full analysis searches only the roots it scanned, so
   after a full analysis of E: the duplicate list no longer shows D:'s groups.
   Run a duplicate search with "all" as scope to cover every indexed drive.
+* **Change detection uses whole-second modification times.** A file rewritten
+  with the same size within the same second as the analysis can still appear
+  in a duplicate group; it can never be removed by mistake, because every
+  removal compares the bytes with the kept copy first.
 * **Organisation is per volume.** Cross-volume moves (verified copy then
   remove) are not implemented.
 * **Recycle Bin paths limited to MAX_PATH** (Windows shell API). Longer paths
