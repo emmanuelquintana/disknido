@@ -172,6 +172,20 @@ fn cached(conn: &Connection, c: &Candidate, col: &str) -> Option<String> {
     .flatten()
 }
 
+/// Writes freshly computed hashes in one transaction (per-row commits were a
+/// measurable cost with 100 000 candidates).
+fn store_cache_batch<'a>(
+    conn: &Connection,
+    rows: impl Iterator<Item = (&'a Candidate, Option<&'a str>, Option<&'a str>)>,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (c, partial, full) in rows {
+        store_cache(&tx, c, partial, full);
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn store_cache(conn: &Connection, c: &Candidate, partial: Option<&str>, full: Option<&str>) {
     let Some(key) = c.key else { return };
     let _ = conn.execute(
@@ -281,11 +295,11 @@ pub fn find_duplicates(
     let mut pool = Vec::new();
     for group in by_size.iter_mut() {
         control.checkpoint()?;
-        let mut seen: HashMap<FileKey, ()> = HashMap::new();
+        let mut seen: std::collections::HashSet<FileKey> = std::collections::HashSet::new();
         for mut c in group.drain(..) {
             match File::open(&c.path).and_then(|f| fsx::file_key(&f)) {
                 Ok(k) => {
-                    if seen.insert(k, ()).is_some() {
+                    if !seen.insert(k) {
                         hard_links += 1; // same physical file as an earlier path
                         continue;
                     }
@@ -298,12 +312,15 @@ pub fn find_duplicates(
     }
     drop(by_size);
 
-    // Partial fingerprint.
+    // Partial fingerprint. Reads are issued in path order: on HDDs this keeps
+    // the head moving forward instead of seeking at random (see docs/PERFORMANCE.md).
     let size_groups = group_by(pool, |c| Some(c.size));
-    let flat: Vec<Candidate> = size_groups.into_iter().flatten().collect();
+    let mut flat: Vec<Candidate> = size_groups.into_iter().flatten().collect();
+    flat.sort_by(|a, b| a.path.cmp(&b.path));
     let done = AtomicU64::new(0);
     let total = flat.len() as u64;
-    let partials: Vec<Option<String>> = par_map(&flat, threads, |c| {
+    // (hash, freshly computed?) — fresh hashes are cached in one transaction below.
+    let partials: Vec<Option<(String, bool)>> = par_map(&flat, threads, |c| {
         if control.is_cancelled() {
             return None;
         }
@@ -313,13 +330,10 @@ pub fn find_duplicates(
             progress("partial", d, total, 0, 0);
         }
         if let Some(h) = cached(&db.lock().unwrap(), c, "partial") {
-            return Some(h);
+            return Some((h, false));
         }
         match partial_hash(&c.path, c.size) {
-            Ok(h) => {
-                store_cache(&db.lock().unwrap(), c, Some(&h), None);
-                Some(h)
-            }
+            Ok(h) => Some((h, true)),
             Err(e) => {
                 skip(&c.path, format!("No se pudo leer: {e}"));
                 None
@@ -327,35 +341,47 @@ pub fn find_duplicates(
         }
     });
     control.checkpoint()?;
-    let tagged: Vec<(Candidate, Option<String>)> = flat.into_iter().zip(partials).collect();
+    store_cache_batch(
+        &db.lock().unwrap(),
+        flat.iter().zip(&partials).filter_map(|(c, h)| h.as_ref().filter(|h| h.1).map(|h| (c, Some(h.0.as_str()), None))),
+    )?;
     let mut pmap: HashMap<(u64, String), Vec<Candidate>> = HashMap::new();
-    for (c, h) in tagged {
-        if let Some(h) = h {
+    for (c, h) in flat.into_iter().zip(partials) {
+        if let Some((h, _)) = h {
             pmap.entry((c.size, h)).or_default().push(c);
         }
     }
-    let flat: Vec<Candidate> = pmap.into_values().filter(|g| g.len() > 1).flatten().collect();
+    let mut flat: Vec<(Candidate, String)> = pmap
+        .into_iter()
+        .filter(|(_, g)| g.len() > 1)
+        .flat_map(|((_, h), g)| g.into_iter().map(move |c| (c, h.clone())))
+        .collect();
+    flat.sort_by(|a, b| a.0.path.cmp(&b.0.path));
 
-    // Full hash.
-    let bytes_total: u64 = flat.iter().map(|c| c.size).sum();
+    // Full hash. Files up to 2 × 64 KiB were already hashed completely by the
+    // partial pass (head + tail cover every byte), so they are not read again.
+    let bytes_total: u64 = flat.iter().map(|c| c.0.size).sum();
     let bytes_done = AtomicU64::new(0);
     let done = AtomicU64::new(0);
     let total = flat.len() as u64;
-    let fulls: Vec<Option<String>> = par_map(&flat, threads, |c| {
+    let fulls: Vec<Option<(String, bool)>> = par_map(&flat, threads, |(c, partial)| {
         if control.is_cancelled() {
             return None;
         }
         let d = done.fetch_add(1, Ordering::Relaxed);
-        progress("hashing", d, total, bytes_done.load(Ordering::Relaxed), bytes_total);
+        if d % 16 == 0 {
+            progress("hashing", d, total, bytes_done.load(Ordering::Relaxed), bytes_total);
+        }
+        if c.size <= 2 * PARTIAL {
+            bytes_done.fetch_add(c.size, Ordering::Relaxed);
+            return Some((partial.clone(), false));
+        }
         if let Some(h) = cached(&db.lock().unwrap(), c, "full") {
             bytes_done.fetch_add(c.size, Ordering::Relaxed);
-            return Some(h);
+            return Some((h, false));
         }
         match hash_file(&c.path, control, &bytes_done) {
-            Ok(h) => {
-                store_cache(&db.lock().unwrap(), c, None, Some(&h));
-                Some(h)
-            }
+            Ok(h) => Some((h, true)),
             Err(crate::Error::Cancelled) => None,
             Err(e) => {
                 skip(&c.path, format!("No se pudo leer: {e}"));
@@ -364,13 +390,18 @@ pub fn find_duplicates(
         }
     });
     control.checkpoint()?;
+    store_cache_batch(
+        &db.lock().unwrap(),
+        flat.iter().zip(&fulls).filter_map(|((c, _), h)| h.as_ref().filter(|h| h.1).map(|h| (c, None, Some(h.0.as_str())))),
+    )?;
     let mut hmap: HashMap<(u64, String), Vec<Candidate>> = HashMap::new();
-    for (c, h) in flat.into_iter().zip(fulls) {
-        if let Some(h) = h {
+    for ((c, _), h) in flat.into_iter().zip(fulls) {
+        if let Some((h, _)) = h {
             hmap.entry((c.size, h)).or_default().push(c);
         }
     }
-    let hash_groups: Vec<((u64, String), Vec<Candidate>)> = hmap.into_iter().filter(|(_, g)| g.len() > 1).collect();
+    let mut hash_groups: Vec<((u64, String), Vec<Candidate>)> = hmap.into_iter().filter(|(_, g)| g.len() > 1).collect();
+    hash_groups.sort_by(|a, b| a.1[0].path.cmp(&b.1[0].path));
 
     // Byte-by-byte verification.
     let total = hash_groups.len() as u64;
