@@ -286,3 +286,23 @@ fn small_bin_files_are_not_disk_images_unless_in_a_set() {
     names.sort();
     assert_eq!(names, vec!["Juego (Track 01).bin", "Juego.cue", "disco.iso"]);
 }
+
+#[test]
+fn forgetting_a_path_updates_totals() {
+    let tmp = fixture_root();
+    let d = tmp.path().join("data");
+    write(&d.join("img/juego.iso"), &bytes(1, 1000));
+    write(&d.join("img/otro.iso"), &bytes(2, 500));
+    write(&d.join("doc.txt"), &bytes(3, 10));
+    scan(&db(tmp.path()), &d);
+    let conn = db::open(&db(tmp.path())).unwrap();
+    query::forget_path(&conn, &d.join("IMG").join("Juego.iso")).unwrap();
+    let names: Vec<String> = disknido_core::images::list(&conn, false).unwrap().into_iter().map(|i| i.name).collect();
+    assert_eq!(names, vec!["otro.iso"], "a recycled image no longer appears");
+    let root = &query::roots(&conn).unwrap()[0];
+    assert_eq!((root.size, root.file_count), (510, 2));
+    let iso = query::extensions(&conn, 10).unwrap().into_iter().find(|b| b.key == "iso").unwrap();
+    assert_eq!((iso.files, iso.bytes), (1, 500));
+    // Unknown paths are ignored.
+    query::forget_path(&conn, &d.join("nope.bin")).unwrap();
+}

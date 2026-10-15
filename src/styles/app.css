@@ -683,6 +683,50 @@ select {
   background: var(--accent-soft);
 }
 
+.dup-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-control);
+}
+
+.dup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.dup-row:last-child {
+  border-bottom: 0;
+}
+
+.dup-row.to-bin {
+  background: var(--danger-soft);
+}
+
+.dup-row.to-bin .path {
+  text-decoration: line-through;
+  color: var(--text-2);
+}
+
+.segmented button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+}
+
 .bar-inline {
   height: 4px;
   border-radius: 2px;
@@ -893,6 +937,44 @@ details.disclosure > summary {
   background: var(--seg-2);
   border-radius: 2px 2px 0 0;
   min-height: 2px;
+}
+
+.year-bars {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  padding-bottom: var(--sp-1);
+}
+
+.year-bar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 48px;
+  min-height: 104px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  background: transparent;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.year-bar .bar {
+  display: block;
+  width: 24px;
+  border-radius: 4px 4px 0 0;
+  background: var(--seg-2);
+}
+
+.year-bar[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.year-bar:hover .bar {
+  background: var(--accent);
 }
 
 .tree {

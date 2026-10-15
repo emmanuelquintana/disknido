@@ -43,6 +43,12 @@ const PROTECTED_NAMES: &[&str] = &[
     "windows.old",
     "boot",
     "efi",
+    // Program and system folders also exist on other drives (D:\Program Files).
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "windows",
+    "windowsapps",
 ];
 
 const PROTECTED_ROOT_FILES: &[&str] = &["pagefile.sys", "hiberfil.sys", "swapfile.sys", "bootmgr", "bootnxt"];
@@ -100,6 +106,13 @@ pub fn protected_reason(path: &Path, allow_appdata: bool) -> Option<String> {
         return Some("Componente de sistema o controlador".into());
     }
     None
+}
+
+/// Windows, installed programs, program data, AppData, recovery and other
+/// system locations. These never appear in duplicate, disk image, backup or
+/// old-folder lists: they are not the user's files to review.
+pub fn is_system_location(path: &Path) -> bool {
+    protected_reason(path, false).is_some()
 }
 
 /// Extra exclusions for removing duplicate copies: content types where two
@@ -222,6 +235,20 @@ mod tests {
         let temp = Path::new(&home).join(r"AppData\Local\Temp\x.tmp");
         assert!(protected_reason(&temp, false).is_some());
         assert!(protected_reason(&temp, true).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn system_locations_are_not_user_files() {
+        let win = std::env::var("SystemRoot").unwrap();
+        assert!(is_system_location(&Path::new(&win).join(r"Installer\b3533.msp")));
+        assert!(is_system_location(&Path::new(&win).join(r"WinSxS\Temp\x")));
+        let home = std::env::var("USERPROFILE").unwrap();
+        assert!(is_system_location(&Path::new(&home).join(r"AppData\Local\Android\Sdk\system.img")));
+        assert!(!is_system_location(&Path::new(&home).join(r"Downloads\LibreOffice.msi")));
+        assert!(!is_system_location(Path::new(r"E:\Juegos\BLEACH.iso")));
+        assert!(is_system_location(Path::new(r"D:\Program Files\TxGameAssistant\rootfs.bin")));
+        assert!(is_system_location(Path::new(r"E:\ProgramData\x")));
     }
 
     #[test]

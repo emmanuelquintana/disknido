@@ -1,5 +1,5 @@
 import { save } from "@tauri-apps/plugin-dialog";
-import { Copy, Download, ShieldCheck, X } from "lucide-react";
+import { Copy, Download, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { api, errorText } from "../api";
 import { Badge, ConfirmDialog, EmptyState, Meter, Notice, PageHeader, PathActions, PathText, useAsync } from "../components/ui";
@@ -10,29 +10,32 @@ import type { DupGroup, DupProgress, DupSummary } from "../types";
 
 const SIZES = [1024, 1024 * 1024, 10 * 1024 * 1024, 100 * 1024 * 1024];
 
+/** One duplicate group: every copy has an explicit choice, "Conservar" or
+ *  "A la Papelera". At least one copy is always kept; protected copies are
+ *  always kept and say why. */
 export function GroupCard({ g, onDone }: { g: DupGroup; onDone: () => void }) {
   const t = useT();
   const lang = useLang();
   const { toast } = useApp();
-  const [keep, setKeep] = useState(g.suggestedKeep);
-  const [marked, setMarked] = useState<Set<number>>(new Set());
+  const [remove, setRemove] = useState<Set<number>>(new Set());
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
-  const toggle = (i: number) =>
-    setMarked((m) => {
-      const n = new Set(m);
-      if (n.has(i)) n.delete(i);
-      else n.add(i);
+  const keptCount = g.files.length - remove.size;
+  const setChoice = (i: number, toBin: boolean) =>
+    setRemove((r) => {
+      const n = new Set(r);
+      if (toBin) n.add(i);
+      else n.delete(i);
       return n;
     });
+  const removable = g.files.map((f, i) => (f.protectedReason ? -1 : i)).filter((i) => i >= 0);
+  // "Keep only the suggested copy": every other unprotected copy goes to the bin.
+  const keepSuggested = () => setRemove(new Set(removable.filter((i) => i !== g.suggestedKeep)));
+  const keepIndex = remove.has(g.suggestedKeep) ? g.files.findIndex((_, i) => !remove.has(i)) : g.suggestedKeep;
   const run = async () => {
     setBusy(true);
     try {
-      const r = await api.recycleDuplicates(
-        g.id,
-        g.files[keep]!.path,
-        [...marked].map((i) => g.files[i]!.path),
-      );
+      const r = await api.recycleDuplicates(g.id, g.files[keepIndex]!.path, [...remove].map((i) => g.files[i]!.path));
       toast(
         r.failed
           ? t("backups.resultPartial", { done: r.recycled, failed: r.failed }) + " " + r.messages.join(" · ")
@@ -49,7 +52,7 @@ export function GroupCard({ g, onDone }: { g: DupGroup; onDone: () => void }) {
   return (
     <article className="card" aria-label={t("dup.copies", { n: g.files.length })}>
       <div className="row-between">
-        <div className="row">
+        <div className="row" style={{ flexWrap: "wrap" }}>
           <strong className="num">{t("dup.copies", { n: g.files.length })}</strong>
           <span className="muted num">· {t("dup.each", { size: formatBytes(g.size, lang) })}</span>
           <span className="muted num">· {t("dup.redundant", { size: formatBytes(g.redundantBytes, lang) })}</span>
@@ -64,74 +67,60 @@ export function GroupCard({ g, onDone }: { g: DupGroup; onDone: () => void }) {
           </Badge>
         )}
       </div>
-      <table className="table" style={{ marginTop: 8 }}>
-        <thead>
-          <tr>
-            <th className="shrink">{t("dup.keep")}</th>
-            <th className="shrink">
-              <span className="sr-only">{t("dup.recycle")}</span>
-              <X size={14} aria-hidden />
-            </th>
-            <th>{t("common.location")}</th>
-            <th className="shrink">{t("common.modified")}</th>
-            <th className="shrink" />
-          </tr>
-        </thead>
-        <tbody>
-          {g.files.map((f, i) => {
-            const isKeep = i === keep;
-            return (
-              <tr key={f.path} aria-selected={marked.has(i)}>
-                <td className="shrink">
-                  <input
-                    type="radio"
-                    name={`keep-${g.id}`}
-                    checked={isKeep}
-                    aria-label={`${t("dup.keep")} ${f.path}`}
-                    onChange={() => {
-                      setKeep(i);
-                      setMarked((m) => {
-                        const n = new Set(m);
-                        n.delete(i);
-                        return n;
-                      });
-                    }}
-                  />
-                </td>
-                <td className="shrink">
-                  <input
-                    type="checkbox"
-                    checked={marked.has(i)}
-                    disabled={isKeep || !!f.protectedReason}
-                    aria-label={`${t("dup.recycle")}: ${f.path}`}
-                    onChange={() => toggle(i)}
-                  />
-                </td>
-                <td>
-                  <PathText path={f.path} />
-                  <span className="row">
-                    {i === g.suggestedKeep && <Badge tone="accent" title={g.suggestionReason}>{t("dup.suggested")}</Badge>}
-                    {f.protectedReason && <Badge tone="warning">{t("dup.protectedCopy", { reason: f.protectedReason })}</Badge>}
-                  </span>
-                </td>
-                <td className="shrink caption">{formatDate(f.mtime, lang)}</td>
-                <td className="shrink">
-                  <PathActions path={f.path} />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <div className="row-between" style={{ marginTop: 8 }}>
-        <span className="caption">{t("dup.suggestionNote")}</span>
-        <button className="btn btn-sm" disabled={marked.size === 0 || busy} onClick={() => setConfirm(true)}>
-          {t("dup.recycle")} ({marked.size})
+      <ul className="dup-list">
+        {g.files.map((f, i) => {
+          const toBin = remove.has(i);
+          const lastKept = !toBin && keptCount === 1;
+          return (
+            <li key={f.path} className={`dup-row ${toBin ? "to-bin" : ""}`}>
+              <div style={{ minWidth: 0 }}>
+                <PathText path={f.path} />
+                <span className="row caption" style={{ flexWrap: "wrap" }}>
+                  {formatDate(f.mtime, lang)}
+                  {i === g.suggestedKeep && <Badge tone="accent" title={g.suggestionReason}>{t("dup.suggested")}</Badge>}
+                  {f.protectedReason && <Badge tone="warning">{t("dup.protectedCopy", { reason: f.protectedReason })}</Badge>}
+                </span>
+              </div>
+              <PathActions path={f.path} />
+              {f.protectedReason ? (
+                <span className="caption">{t("dup.alwaysKept")}</span>
+              ) : (
+                <div className="segmented" role="radiogroup" aria-label={f.path}>
+                  <button role="radio" aria-checked={!toBin} aria-pressed={!toBin} onClick={() => setChoice(i, false)}>
+                    {t("dup.keep")}
+                  </button>
+                  <button
+                    role="radio"
+                    aria-checked={toBin}
+                    aria-pressed={toBin}
+                    disabled={lastKept}
+                    title={lastKept ? t("dup.mustKeepOne") : undefined}
+                    onClick={() => setChoice(i, true)}
+                  >
+                    {t("dup.toBin")}
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <div className="row-between" style={{ marginTop: 10, flexWrap: "wrap" }}>
+        <button className="btn btn-sm btn-subtle" onClick={keepSuggested} disabled={removable.filter((i) => i !== g.suggestedKeep).length === 0}>
+          {t("dup.keepSuggestedOnly")}
         </button>
+        <div className="row">
+          <span className="caption num">
+            {t("dup.planSummary", { keep: keptCount, bin: remove.size, size: formatBytes(g.size * remove.size, lang) })}
+          </span>
+          <button className="btn btn-sm btn-primary" disabled={remove.size === 0 || busy} onClick={() => setConfirm(true)}>
+            {t("dup.recycle")} ({remove.size})
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirm}
-        title={t("dup.confirmTitle", { n: marked.size })}
+        title={t("dup.confirmTitle", { n: remove.size })}
         body={
           <>
             <p>{t("dup.confirmBody")}</p>
@@ -146,6 +135,7 @@ export function GroupCard({ g, onDone }: { g: DupGroup; onDone: () => void }) {
       <details className="disclosure">
         <summary>{t("common.technical")}</summary>
         <code className="caption">BLAKE3 {g.hash}</code>
+        <p className="caption">{t("dup.suggestionNote")}</p>
       </details>
     </article>
   );

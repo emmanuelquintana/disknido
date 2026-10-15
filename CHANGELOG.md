@@ -34,6 +34,18 @@ Fixes from testing on real drives (5.4 M files, 4.4 TB).
 - Disk images: small `.bin`/`.img` files are listed only as part of a CUE/CCD
   set or when larger than 32 MB (firmware and game data were listed before).
 - Faster index statistics after a scan (`analysis_limit`).
+- System locations (Windows, Program Files, ProgramData, AppData, WinSxS,
+  Installer…, on any drive) never appear in duplicates, disk images, backups
+  or old folders.
+- Items sent to the Recycle Bin disappear from every list at once: the index
+  forgets them and updates folder and extension totals.
+- Duplicates: every copy has an explicit "Keep" / "To Recycle Bin" choice, a
+  "Keep only the suggested one" button and a plan summary; the last kept copy
+  can never be sent to the bin.
+- Backups: per-year bars (click to filter), a legend for the confidence
+  badges; app/tool folders (`.name`, node_modules, XboxGames, steamapps,
+  caches), empty folders, tiny undated folders and impossible years (e.g.
+  "2072") are no longer listed as backups.
 
 ## [0.1.0] — unreleased
 

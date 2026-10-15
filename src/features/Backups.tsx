@@ -81,24 +81,31 @@ function Library({ items, selected, setSelected, reload }: { items: BackupItem[]
       (!year || String(i.year) === year) &&
       (!state || (state === "organized" ? i.organized : state === "review" ? i.confidence === "review" : !i.organized)),
   );
-  // timeline: backups per month over the years present
-  const counts = new Map<string, number>();
-  for (const i of items) if (i.year && i.month) counts.set(`${i.year}-${i.month}`, (counts.get(`${i.year}-${i.month}`) ?? 0) + 1);
-  const months = years.flatMap((y) => Array.from({ length: 12 }, (_, m) => ({ key: `${y}-${m + 1}`, label: `${y}-${String(m + 1).padStart(2, "0")}` })));
-  const max = Math.max(1, ...counts.values());
+  // Per-year bars: count and size of backups with a known year.
+  const perYear = years.map((y) => {
+    const of = items.filter((i) => i.year === y);
+    return { year: y, n: of.length, bytes: of.reduce((a, i) => a + i.size, 0) };
+  });
+  const max = Math.max(1, ...perYear.map((p) => p.n));
   return (
     <>
-      {months.length > 0 && (
+      {perYear.length > 0 && (
         <div className="card">
           <h2 className="section-title">{t("backups.timeline")}</h2>
-          <div className="timeline" aria-hidden>
-            {months.map((m) => (
-              <span key={m.key} title={`${m.label}: ${counts.get(m.key) ?? 0}`} style={{ height: `${((counts.get(m.key) ?? 0) / max) * 100}%` }} />
+          <div className="year-bars">
+            {perYear.map((p) => (
+              <button
+                key={p.year}
+                className="year-bar"
+                aria-pressed={year === String(p.year)}
+                title={`${p.year}: ${p.n} · ${formatBytes(p.bytes, lang)}`}
+                onClick={() => setYear(year === String(p.year) ? "" : String(p.year))}
+              >
+                <span className="num caption">{p.n}</span>
+                <span className="bar" style={{ height: `${Math.max(6, (p.n / max) * 64)}px` }} />
+                <span className="caption">{p.year}</span>
+              </button>
             ))}
-          </div>
-          <div className="row-between caption">
-            <span>{years[0]}</span>
-            <span>{years[years.length - 1]}</span>
           </div>
         </div>
       )}
@@ -133,6 +140,11 @@ function Library({ items, selected, setSelected, reload }: { items: BackupItem[]
           </label>
           <span className="caption">{t("common.selected", { n: selected.size })}</span>
         </div>
+        <div className="legend">
+          <span className="row"><Badge tone="success">{t("backups.conf.high")}</Badge>{t("backups.legend.high")}</span>
+          <span className="row"><Badge tone="accent">{t("backups.conf.medium")}</Badge>{t("backups.legend.medium")}</span>
+          <span className="row"><Badge tone="warning">{t("backups.conf.review")}</Badge>{t("backups.legend.review")}</span>
+        </div>
         <div style={{ overflow: "auto", maxHeight: 640, marginTop: 12 }}>
           <table className="table">
             <thead>
@@ -140,7 +152,7 @@ function Library({ items, selected, setSelected, reload }: { items: BackupItem[]
                 <th className="shrink">
                   <span className="sr-only">{t("backups.selectForPlan")}</span>
                 </th>
-                <th>{t("common.name")}</th>
+                <th style={{ width: "45%" }}>{t("common.name")}</th>
                 <th className="shrink">{t("common.date")}</th>
                 <th className="shrink">{t("common.size")}</th>
                 <th className="shrink">{t("common.status")}</th>

@@ -241,7 +241,7 @@ pub fn load_candidates(conn: &Connection, req: &DupRequest) -> Result<Vec<Candid
             continue;
         }
         let Some(path) = res.file_path(parent, &name) else { continue };
-        if in_scope(&path, &req.scopes) {
+        if in_scope(&path, &req.scopes) && !safety::is_system_location(&path) {
             out.push(Candidate { path, size: size as u64, mtime, key: None });
         }
     }
@@ -574,7 +574,28 @@ pub fn suggest_keep(files: &[DupFile]) -> (usize, String) {
     (i, "Ruta más corta (sugerencia, no garantía de originalidad)".into())
 }
 
+/// Drops stored copies in system locations (results saved by older
+/// versions) and groups left with fewer than two copies.
+fn prune_system_copies(conn: &Connection) -> Result<()> {
+    let paths: Vec<String> = {
+        let mut st = conn.prepare("SELECT DISTINCT path FROM dup_files")?;
+        st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+    };
+    let system: Vec<&String> = paths.iter().filter(|p| safety::is_system_location(Path::new(p.as_str()))).collect();
+    if system.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for p in system {
+        tx.execute("DELETE FROM dup_files WHERE path=?1", [p])?;
+    }
+    tx.execute("DELETE FROM dup_groups WHERE (SELECT COUNT(*) FROM dup_files f WHERE f.group_id=dup_groups.id) < 2", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn list_groups(conn: &Connection, offset: i64, limit: i64) -> Result<(Vec<DupGroup>, i64)> {
+    prune_system_copies(conn)?;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM dup_groups", [], |r| r.get(0))?;
     let mut st = conn.prepare(
         "SELECT g.id, g.size, g.hash, g.verified, g.run_at, COUNT(f.path) n FROM dup_groups g JOIN dup_files f ON f.group_id=g.id
@@ -606,6 +627,7 @@ pub fn list_groups(conn: &Connection, offset: i64, limit: i64) -> Result<(Vec<Du
 }
 
 pub fn totals(conn: &Connection) -> Result<(u64, u64)> {
+    prune_system_copies(conn)?;
     let (groups, redundant): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(size*(n-1)),0) FROM (SELECT g.size, COUNT(f.path) n FROM dup_groups g JOIN dup_files f ON f.group_id=g.id GROUP BY g.id)",
         [],

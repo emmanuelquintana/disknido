@@ -384,7 +384,7 @@ pub fn old_folders(conn: &Connection, months: i64, min_bytes: u64, limit: usize,
         let path = res.dir_path(e.id).unwrap_or_default();
         e.path = path.to_string_lossy().into_owned();
         let mark = marks.get(&safety::path_key(&path)).cloned();
-        if mark.as_deref() == Some("excluded") || mark.as_deref() == Some("ignored") {
+        if mark.as_deref() == Some("excluded") || mark.as_deref() == Some("ignored") || safety::is_system_location(&path) {
             continue;
         }
         let key = safety::path_key(&path);
@@ -464,4 +464,72 @@ pub fn search(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<EntryVi
             v
         })
         .collect())
+}
+
+/// Removes a path (file or folder with its contents) from the index after it
+/// left its location (sent to the Recycle Bin, moved), keeping folder totals
+/// and extension totals of every ancestor correct. Unknown paths are ignored.
+pub fn forget_path(conn: &Connection, path: &Path) -> Result<()> {
+    // Find the indexed root that contains the path, then walk down by name.
+    let roots: Vec<(i64, String)> = {
+        let mut st = conn.prepare("SELECT id, name FROM entries WHERE parent_id=0")?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    let Some((root_id, root_name)) =
+        roots.into_iter().filter(|(_, n)| safety::is_within(path, Path::new(n))).max_by_key(|(_, n)| n.len())
+    else {
+        return Ok(());
+    };
+    let rel = match path.strip_prefix(&root_name) {
+        Ok(r) => r.to_path_buf(),
+        Err(_) => {
+            // Case differs: strip by component count.
+            let n = Path::new(&root_name).components().count();
+            path.components().skip(n).collect()
+        }
+    };
+    let mut chain = vec![root_id];
+    let mut id = root_id;
+    let mut st = conn.prepare("SELECT id FROM entries WHERE parent_id=?1 AND name=?2 COLLATE NOCASE")?;
+    for c in rel.components() {
+        let name = c.as_os_str().to_string_lossy();
+        match st.query_row(params![id, name], |r| r.get::<_, i64>(0)).optional()? {
+            Some(child) => {
+                id = child;
+                chain.push(id);
+            }
+            None => return Ok(()),
+        }
+    }
+    if chain.len() < 2 {
+        return Ok(()); // never forget a whole root this way
+    }
+    let (is_dir, size, files, ext): (bool, i64, i64, Option<String>) = conn.query_row(
+        "SELECT is_dir, CASE WHEN is_dir=1 THEN COALESCE(total_size,0) ELSE size END,
+                CASE WHEN is_dir=1 THEN COALESCE(file_count,0) ELSE 1 END, ext FROM entries WHERE id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    if is_dir {
+        tx.execute(
+            "WITH RECURSIVE t(id) AS (SELECT ?1 UNION ALL SELECT e.id FROM entries e JOIN t ON e.parent_id=t.id)
+             DELETE FROM entries WHERE id IN (SELECT id FROM t)",
+            [id],
+        )?;
+    } else {
+        tx.execute("DELETE FROM entries WHERE id=?1", [id])?;
+        tx.execute(
+            "UPDATE ext_stats SET files=MAX(files-1,0), bytes=MAX(bytes-?3,0) WHERE root_id=?1 AND ext=?2",
+            params![root_id, ext.unwrap_or_default(), size],
+        )?;
+    }
+    for anc in &chain[..chain.len() - 1] {
+        tx.execute(
+            "UPDATE entries SET total_size=MAX(COALESCE(total_size,0)-?2,0), file_count=MAX(COALESCE(file_count,0)-?3,0) WHERE id=?1",
+            params![anc, size, files],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }

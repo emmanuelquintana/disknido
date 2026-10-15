@@ -91,8 +91,11 @@ fn is_num(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// A plausible year in a backup name: 1990 up to next year (a "2072" in a
+/// name is an id or a version, not a date).
 fn year_ok(y: i32) -> bool {
-    (1990..=2100).contains(&y)
+    use chrono::Datelike;
+    (1990..=chrono::Local::now().year() + 1).contains(&y)
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -380,6 +383,26 @@ fn structural_folder(path: &Path, root_name: &str) -> bool {
     })
 }
 
+/// Below this, a "backup" folder without a date in its name is an app's own
+/// settings copy, not something to organise by month.
+const MIN_BACKUP_BYTES: u64 = 1024 * 1024;
+
+/// Folders that belong to tools, launchers and caches: hidden dot-folders
+/// (`.gemini`, `.git`), dependency and cache folders, game save libraries.
+fn in_tool_folder(path: &Path) -> bool {
+    path.components().any(|c| match c {
+        Component::Normal(s) => {
+            let n = s.to_string_lossy().to_lowercase();
+            n.starts_with('.')
+                || matches!(
+                    n.as_str(),
+                    "node_modules" | "xboxgames" | "steamapps" | "cache" | "caches" | "gamesave" | "crossdevice"
+                )
+        }
+        _ => false,
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupItem {
@@ -461,6 +484,12 @@ pub fn list(conn: &Connection, root_name: &str) -> Result<Vec<BackupItem>> {
         }
         let in_container = containers.contains(&parent);
         let Some(path) = res.dir_path(id) else { continue };
+        // Not the user's backups: system/app locations, tool folders, or too
+        // small to be worth organising.
+        if safety::is_system_location(&path) || count == 0 || in_tool_folder(&path) {
+            inside.insert(id);
+            continue;
+        }
         if structural_folder(&path, root_name) || is_container_name(&name) {
             containers.insert(id);
             if organized_layout(&path, root_name).is_none() {
@@ -469,6 +498,13 @@ pub fn list(conn: &Connection, root_name: &str) -> Result<Vec<BackupItem>> {
         }
         let organized = organized_layout(&path, root_name);
         let det = detect(&name, in_container);
+        // Tiny folders without a date in their name are apps' own copies.
+        if (size as u64) < MIN_BACKUP_BYTES && det.as_ref().is_none_or(|d| !d.date.has_any()) && organized.is_none() {
+            if in_container {
+                containers.insert(id);
+            }
+            continue; // its subfolders are still examined
+        }
         if det.is_none() && organized.is_none() {
             if in_container {
                 containers.insert(id); // e.g. D:\Respaldos\Laptop\2024-01
@@ -640,6 +676,15 @@ mod tests {
         assert!(structural_folder(Path::new(r"D:\Archivo\Backups\2024"), "Backups"));
         assert!(structural_folder(Path::new(r"D:\Backups\2024\2024-01"), "Backups"));
         assert!(!structural_folder(Path::new(r"D:\Backups\2024\2024-01\Backup Enero"), "Backups"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tool_folders_are_not_user_backups() {
+        assert!(in_tool_folder(Path::new(r"C:\Users\a\.gemini\antigravity-backup")));
+        assert!(in_tool_folder(Path::new(r"C:\XboxGames\GameSave\User_Backup")));
+        assert!(in_tool_folder(Path::new(r"D:\proj\node_modules\x\backup")));
+        assert!(!in_tool_folder(Path::new(r"D:\Respaldos\Backup Enero 2025")));
     }
 
     #[cfg(windows)]

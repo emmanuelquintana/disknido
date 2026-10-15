@@ -129,7 +129,7 @@ describe("duplicates", () => {
     ],
   };
 
-  it("never lets the kept or a protected copy be marked, and confirms before recycling", async () => {
+  it("lets each copy be kept or sent to the bin, never all of them, and confirms first", async () => {
     const recycled: unknown[] = [];
     mockCommands({
       recycle_duplicates: (a: Record<string, unknown>) => {
@@ -139,12 +139,14 @@ describe("duplicates", () => {
     });
     renderApp(<GroupCard g={group} onDone={() => {}} />);
     expect(screen.getByText("Duplicado verificado")).toBeInTheDocument();
-    const boxes = screen.getAllByRole("checkbox");
-    expect(boxes[0]).toBeDisabled(); // kept copy
-    expect(boxes[1]).toBeDisabled(); // protected backup copy
+    // The protected backup copy has no choice: it is always kept.
+    expect(screen.getByText("Se conserva siempre")).toBeInTheDocument();
+    const toBin = screen.getAllByRole("radio", { name: "A la Papelera" });
+    expect(toBin).toHaveLength(2);
     const send = screen.getByRole("button", { name: /Enviar copias marcadas/ });
     expect(send).toBeDisabled();
-    await userEvent.click(boxes[2]!);
+    await userEvent.click(toBin[1]!); // the Downloads copy
+    expect(screen.getByText(/Conservar 2 · A la Papelera 1/)).toBeInTheDocument();
     await userEvent.click(send);
     expect(recycled).toHaveLength(0); // dialog first
     const dlg = screen.getByRole("dialog");
@@ -152,6 +154,15 @@ describe("duplicates", () => {
     await userEvent.click(within(dlg).getByRole("button", { name: /Enviar copias marcadas/ }));
     await waitFor(() => expect(recycled).toHaveLength(1));
     expect(recycled[0]).toEqual({ groupId: 7, keep: "D:\\Fotos\\a.jpg", remove: ["C:\\Users\\x\\Downloads\\copia.jpg"] });
+  });
+
+  it("keeps at least one copy", async () => {
+    mockCommands({});
+    const two: DupGroup = { ...group, files: [group.files[0]!, group.files[2]!], suggestedKeep: 0 };
+    renderApp(<GroupCard g={two} onDone={() => {}} />);
+    const toBin = screen.getAllByRole("radio", { name: "A la Papelera" });
+    await userEvent.click(toBin[0]!);
+    expect(toBin[1]).toBeDisabled();
   });
 });
 

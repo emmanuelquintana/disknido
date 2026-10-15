@@ -1,4 +1,4 @@
-# Known limitations (v0.1.0)
+# Known limitations (v0.2.0)
 
 * **Folder totals count hard links once per path.** Logical sizes of folders
   that contain several hard links to the same file are overstated. Duplicate
@@ -21,6 +21,13 @@
   with the same size within the same second as the analysis can still appear
   in a duplicate group; it can never be removed by mistake, because every
   removal compares the bytes with the kept copy first.
+* **System locations are hidden by path.** Windows, Program Files,
+  ProgramData, AppData and similar folders (by name, on any drive) are never
+  listed in duplicates, images, backups or old folders. A user folder that
+  happens to be named `Windows` at the root of a drive is hidden too.
+* **Backup detection skips tool folders** (names starting with `.`,
+  node_modules, XboxGames, steamapps, caches) and folders under 1 MB without a
+  date; a real backup with such a name has to be found in the explorer.
 * **Organisation is per volume.** Cross-volume moves (verified copy then
   remove) are not implemented.
 * **Recycle Bin paths limited to MAX_PATH** (Windows shell API). Longer paths

@@ -144,6 +144,9 @@ pub fn list(conn: &Connection, read_headers: bool) -> Result<Vec<DiskImage>> {
         }
         let folder = res.dir_path(*parent).unwrap_or_default();
         let path = folder.join(name);
+        if crate::safety::is_system_location(&path) {
+            continue;
+        }
         let cloud_only = fsx::is_cloud_only_attrs(*attrs);
         let mut img = DiskImage {
             id: *id,

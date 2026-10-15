@@ -154,6 +154,9 @@ pub fn recycle(
                 ok += 1;
                 bytes += n;
                 ops::item_status(conn, op, seq, "done", None)?;
+                // The file is gone from its folder: drop it from the index so
+                // no list keeps showing it.
+                crate::query::forget_path(conn, &t.path)?;
             }
             Err(e) => {
                 failed += 1;

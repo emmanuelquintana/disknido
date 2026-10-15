@@ -72,6 +72,19 @@ on the same PC (C:, D:, E:, G: — 5.4 M files, 4.4 TB):
 
 * CI `cargo audit` found RustSec advisories in `time` 0.3.45 and `quick-xml` 0.38 (transitive, via Tauri); updated to `time` 0.3.55 and `quick-xml` 0.42 (`plist` 1.10.1). MSRV raised to 1.88 (already required by `zip`). `pnpm audit --prod`: no known vulnerabilities.
 
+## v0.2.0 user testing round 2
+
+* Reported: recycled items stayed listed; Windows/AppData paths in images,
+  duplicates and backups; unclear duplicates/backups UI.
+* Fixed: index forgets recycled paths (`query::forget_path`, totals and
+  `ext_stats` updated); `safety::is_system_location` filters every list;
+  explicit Keep / To Recycle Bin per copy; per-year backup bars and legend;
+  tool/app/empty/tiny-undated folders and impossible years dropped from backups.
+* Verified on the release build over the real drives (CDP): backups 40 rows,
+  0 system or tool folders, years 2020–2026; images 607, 0 system paths; old
+  folders 218, 0 system paths; duplicate groups without system paths; a
+  recycled image disappeared from the list immediately.
+
 ## Reviews
 
 * **Ponytail-style review (manual):** removed unused commands (`entry`,
