@@ -13,7 +13,7 @@ servers or helper processes.
 │ src-tauri/src/lib.rs — command layer                                           │
 │   • validates arguments, never trusts UI state                                 │
 │   • long jobs → spawn_blocking + Control (cancel/pause) + throttled events     │
-│   • one shared SQLite connection for queries, one per long task                │
+│   • every query on its own SQLite connection off the UI thread (WAL readers)   │
 └───────────────────────────────────────▲───────────────────────────────────────┘
                                         │ plain Rust calls
 ┌───────────────────────────────────────┴───────────────────────────────────────┐
@@ -27,6 +27,7 @@ servers or helper processes.
 │  backups    interpretable backup + date detection                            │
 │  organize   dry-run plan → re-validated native renames → verify → undo        │
 │  compress   streamed ZIP (Deflate/ZIP64) → BLAKE3 re-verification             │
+│  catalog    what is inside each ZIP and where it is; accent-insensitive search │
 │  cleanup    documented rules over known locations                            │
 │  images     disk images, CUE/GDI sets, ISO 9660 labels                        │
 │  recycle    Recycle Bin (SHFileOperationW + FOF_ALLOWUNDO), empty bin         │

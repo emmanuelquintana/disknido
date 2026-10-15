@@ -100,7 +100,7 @@ export const es = {
   "scan.mode.quick": "Rápido",
   "scan.mode.quickDesc": "Tamaños, fechas y tipos. Sin duplicados.",
   "scan.mode.full": "Completo",
-  "scan.mode.fullDesc": "Índice completo y búsqueda de duplicados exactos.",
+  "scan.mode.fullDesc": "Índice completo y búsqueda de duplicados exactos. En discos grandes la primera búsqueda puede tardar; las siguientes reutilizan las huellas.",
   "scan.mode.custom": "Personalizado",
   "scan.mode.customDesc": "Carpetas concretas que tú eliges.",
   "scan.drives": "Unidades",

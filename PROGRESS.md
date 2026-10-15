@@ -14,7 +14,7 @@ Real state of the project. Updated 2026-10-15.
 | 6. Cleanup & images | done | `cleanup.rs`, `images.rs`, `recycle.rs` |
 | 7. Interface | done | 10 screens, es/en, light/dark; 14 frontend tests; E2E run on the real app |
 | 8. Performance & safety | done for 10 k / 100 k; 1 M pending | `docs/PERFORMANCE.md` (duplicates 108 s → 15.7 s on HDD after measured fixes) |
-| 9. Publication | done (draft release) | Public repo, CI green (check + audit), `v0.1.0` draft release with NSIS/MSI + SHA256SUMS built by GitHub Actions |
+| 9. Publication | v0.1.0 published | Public repo, CI green (check + audit), `v0.1.0` draft release with NSIS/MSI + SHA256SUMS built by GitHub Actions |
 
 ## Tests executed (2026-10-14, Windows 11, Rust 1.99, Node 24)
 
@@ -45,6 +45,29 @@ date. Design in `docs/SCANNER.md#per-root-replacement`.
   clean. `pnpm typecheck`, `pnpm lint` → clean; `pnpm test` → 15 passing.
 * Not yet re-checked end-to-end on the real app or against a real D:/E:.
 
+## Real-drive fixes (2026-10-15, v0.2.0)
+
+The user ran v0.1.0 on their own drives and reported that it froze, that the
+scan was slow and that "old folders" was not useful. Reproduced and measured
+on the same PC (C:, D:, E:, G: — 5.4 M files, 4.4 TB):
+
+* Freeze: a 26 s extension `GROUP BY` held the single shared DB connection.
+  Fixed with per-query connections off the UI thread and `ext_stats` written
+  while scanning (26 s → 2 ms).
+* Scan: drives on different physical disks now walk in parallel
+  (≈250 s sequential walk → 63 s, warmer cache on the second run).
+* Duplicates: one open per candidate, per-drive reader pools, continuous
+  progress with the current file, byte comparison moved to removal time,
+  cached partial and full fingerprints; default minimum 1 MB. First search on
+  this data set hashes 285 GB; repeat searches took 7.8 min and then 4.6 s.
+* Old folders: installed apps/games detected and hidden by default.
+* Disk images: small `.bin`/`.img` not in a set are no longer listed
+  (61 162 → 3 403 on the real drives).
+* Release app E2E on the real drives: screen switches 16 ms avg while
+  scanning, cancel 0.4 s, old folders 52 shown + 27 apps hidden, catalog
+  search 0.8 s. A stuck v0.1 instance was reading D: during most measurements.
+* New: archive catalog with search (user request).
+
 ## Dependency audit
 
 * CI `cargo audit` found RustSec advisories in `time` 0.3.45 and `quick-xml` 0.38 (transitive, via Tauri); updated to `time` 0.3.55 and `quick-xml` 0.42 (`plist` 1.10.1). MSRV raised to 1.88 (already required by `zip`). `pnpm audit --prod`: no known vulnerabilities.
@@ -70,5 +93,4 @@ See `docs/DECISIONS.md`.
 * Duplicate results are still replaced per search (a full analysis of E: drops D:'s groups); see docs/LIMITATIONS.md.
 * Cross-volume verified moves; allocated-size accounting; ARM64; signing.
 * Start-with-Windows and notification settings (not implemented).
-* The `v0.1.0` GitHub Release is a **draft**: install the CI-built setup on a clean Windows PC (see docs/RELEASING.md) before publishing it.
 * A local NSIS build was installed per-user, launched (window "DiskNido", index created) and uninstalled successfully.

@@ -104,6 +104,43 @@ database connection, which froze every other screen. Now each screen query
 runs on its own connection in the background, and the distribution comes
 from `ext_stats`.
 
+### Duplicate search on the real drives (min 1 MB)
+
+47 849 candidates (same size as another file), 31 257 of them with an equal
+partial fingerprint, **285 GB** to hash in full. Result: 11 229 groups,
+31 096 files, 153 GB redundant, 216 files skipped (unreadable or changed).
+
+| Run | Partial fingerprints | Full hashes | Byte verification | Total |
+| --- | --- | --- | --- | --- |
+| First search, old pipeline | ~12 min | ~40 min | would re-read 272 GB (stopped) | > 1 h |
+| Repeat search, new pipeline (full hashes cached) | ~7 min | cached | at removal time | **7.8 min** |
+| Repeat search again (fingerprints cached, OS file cache warm) | cached | cached | at removal time | **4.6 s** |
+
+The partial phase is bound by HDD seeks (≈70–190 files/s with one reader per
+HDD). Repeat searches now also reuse cached partial fingerprints (same path,
+size, modification time and file identity), so only the open is paid.
+
+### In the release app on the real drives
+
+Driving the v0.2.0 release window over the WebView2 DevTools protocol:
+
+| Check | Result |
+| --- | --- |
+| Screen switch while scanning all four drives | avg 16 ms, max 75 ms |
+| Screen switch while the duplicate search hashes | ≈ 90 ms |
+| Home summary (first numbers / folder findings) | 26 ms / 4.4 s (loads after the page) |
+| Cancel a running duplicate search | 0.4 s |
+| Old folders (36 months, ≥ 1 GB) | 3.9 s; 52 shown, 27 installed apps/games hidden |
+| Disk images listed | 3 403 (was 61 162 before the `.bin`/`.img` rule) |
+| Explorer: open C: (3.5 M files) | 0.24 s |
+| Catalog search | 0.8 s |
+
+**Caveat for every real-drive number on this page:** during all of these
+measurements a stuck v0.1 instance (the one the user reported) was still
+running a 1 KB duplicate search in the background and reading D: until it was
+closed at the end. Real numbers without that contention should be equal or
+better.
+
 ## Not measured yet
 
 * 1 000 000 entries: the generator supports it (`gen <dir> 1000000`, ≈8.7 GB);

@@ -100,7 +100,7 @@ export const en: Record<Key, string> = {
   "scan.mode.quick": "Quick",
   "scan.mode.quickDesc": "Sizes, dates and types. No duplicates.",
   "scan.mode.full": "Full",
-  "scan.mode.fullDesc": "Full index and exact duplicate search.",
+  "scan.mode.fullDesc": "Full index and exact duplicate search. On large drives the first search can take a while; later ones reuse fingerprints.",
   "scan.mode.custom": "Custom",
   "scan.mode.customDesc": "Specific folders you choose.",
   "scan.drives": "Drives",

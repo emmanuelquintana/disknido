@@ -285,9 +285,13 @@ fn par_by_drive<T: Sync, R: Send>(
 
 /// Opens a file once: its physical identity (hard links share it) and the
 /// partial fingerprint. Files up to 128 KiB are hashed completely here.
-fn identity_and_partial(path: &Path, size: u64) -> Result<(FileKey, String)> {
+/// `cached` returns a still-valid partial for that identity (skips the reads).
+fn identity_and_partial(path: &Path, size: u64, cached: impl Fn(FileKey) -> Option<String>) -> Result<(FileKey, String, bool)> {
     let mut f = File::open(path)?;
     let key = fsx::file_key(&f)?;
+    if let Some(h) = cached(key) {
+        return Ok((key, h, false));
+    }
     let mut h = blake3::Hasher::new();
     let mut buf = vec![0u8; PARTIAL as usize];
     let n = read_full(&mut f, &mut buf)?;
@@ -300,7 +304,7 @@ fn identity_and_partial(path: &Path, size: u64) -> Result<(FileKey, String)> {
         let n = read_full(&mut f, &mut buf)?;
         h.update(&buf[..n]);
     }
-    Ok((key, h.finalize().to_hex().to_string()))
+    Ok((key, h.finalize().to_hex().to_string(), true))
 }
 
 pub fn find_duplicates(
@@ -353,7 +357,7 @@ pub fn find_duplicates(
     // fingerprint.
     let total = candidates.len() as u64;
     let done = AtomicU64::new(0);
-    let firsts: Vec<Option<(FileKey, String)>> = par_by_drive(
+    let firsts: Vec<Option<(FileKey, String, bool)>> = par_by_drive(
         &candidates,
         |c| &c.path,
         threads_for,
@@ -366,7 +370,11 @@ pub fn find_duplicates(
             if due() {
                 progress("partial", d, total, 0, 0);
             }
-            match identity_and_partial(&c.path, c.size) {
+            let lookup = |key: FileKey| {
+                let probe = Candidate { key: Some(key), ..c.clone() };
+                cached(&db.lock().unwrap(), &probe, "partial")
+            };
+            match identity_and_partial(&c.path, c.size, lookup) {
                 Ok(r) => Some(r),
                 Err(e) => {
                     skip(&c.path, format!("No se pudo leer: {e}"));
@@ -378,12 +386,18 @@ pub fn find_duplicates(
     control.checkpoint()?;
     let mut hard_links = 0u64;
     let mut pmap: HashMap<(u64, String), Vec<Candidate>> = HashMap::new();
+    let mut fresh: Vec<(Candidate, String)> = Vec::new();
     for (mut c, r) in candidates.into_iter().zip(firsts) {
-        if let Some((k, h)) = r {
+        if let Some((k, h, is_new)) = r {
             c.key = Some(k);
+            if is_new {
+                fresh.push((c.clone(), h.clone()));
+            }
             pmap.entry((c.size, h)).or_default().push(c);
         }
     }
+    store_cache_batch(&db.lock().unwrap(), fresh.iter().map(|(c, h)| (c, Some(h.as_str()), None)))?;
+    drop(fresh);
     // Within a group, paths sharing a FileKey are the same physical file.
     let mut flat: Vec<(Candidate, String)> = Vec::new();
     for ((_, h), g) in pmap {
