@@ -48,6 +48,7 @@ export const api = {
   organizeUndo: (opId: number) => invoke<T.ExecResult>("organize_undo", { opId }),
   compressPreview: (request: T.CompressRequest) => invoke<T.CompressPreview>("compress_preview", { request }),
   startCompress: (request: T.CompressRequest) => invoke<string>("start_compress", { request }),
+  startCompressBatch: (request: { items: T.CompressRequest[]; recycleOriginals: boolean }) => invoke<string>("start_compress_batch", { request }),
   cleanupAnalyze: () => invoke<T.CleanupCategory[]>("cleanup_analyze"),
   cleanupRecycle: (ruleId: string, paths: string[]) => invoke<T.RecycleResult>("cleanup_recycle", { ruleId, paths }),
   emptyRecycleBin: () => invoke<T.BinInfo>("empty_recycle_bin"),

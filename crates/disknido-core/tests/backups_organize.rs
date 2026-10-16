@@ -189,3 +189,34 @@ fn preview_from_index_counts_moves_and_verifies() {
     let dst = Path::new(&plan.items[0].dst);
     assert!(dst.join("a.txt").exists() && dst.join("sub/b.txt").exists());
 }
+
+#[test]
+fn organizing_moves_folders_in_the_index_too() {
+    let tmp = fixture_root();
+    let d = tmp.path().join("data");
+    write(&d.join("x/Backup Junio 2024/a.txt"), b"aaaa");
+    write(&d.join("x/Backup Junio 2024/sub/b.txt"), b"bb");
+    write(&d.join("x/otro.txt"), b"o");
+    let dbp = db(tmp.path());
+    scan(&dbp, &d);
+    let conn = db::open(&dbp).unwrap();
+    let before = backups::list(&conn, "Backups").unwrap();
+    assert!(before.iter().any(|b| b.path.ends_with("x\\Backup Junio 2024") || b.path.ends_with("x/Backup Junio 2024")));
+    let input =
+        PlanInput { path: d.join("x/Backup Junio 2024"), year: Some(2024), month: Some(6), no_date: false, indexed: None };
+    let plan = organize::plan(&request(&d, vec![input]), &Control::default()).unwrap();
+    let res = organize::execute(&conn, &plan.items, &Control::default(), &|_, _| {}).unwrap();
+    assert_eq!(res.done, 1);
+    let after = backups::list(&conn, "Backups").unwrap();
+    let moved = after
+        .iter()
+        .find(|b| Path::new(&b.path) == Path::new(&plan.items[0].dst))
+        .expect("listed at its new place without a new scan");
+    assert!(moved.organized);
+    assert_eq!((moved.file_count, moved.size), (2, 6));
+    assert!(!after.iter().any(|b| Path::new(&b.path) == d.join("x/Backup Junio 2024")), "not listed at the old place");
+    // Undo puts it back in the index as well.
+    organize::undo(&conn, res.op_id, &Control::default()).unwrap();
+    let back = backups::list(&conn, "Backups").unwrap();
+    assert!(back.iter().any(|b| Path::new(&b.path) == d.join("x/Backup Junio 2024")));
+}

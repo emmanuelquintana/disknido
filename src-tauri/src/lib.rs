@@ -389,6 +389,15 @@ fn start_compress(app: AppHandle, state: State<AppState>, request: compress::Com
     }))
 }
 
+#[tauri::command]
+fn start_compress_batch(app: AppHandle, state: State<AppState>, request: compress::BatchRequest) -> CmdResult<String> {
+    let db_path = state.db_path.clone();
+    Ok(spawn_task(&app, &state, "compress", move |control, emit| {
+        let conn = db::open(&db_path)?;
+        compress::compress_batch(&conn, &request, control, &|p| emit(serde_json::to_value(p).unwrap_or_default()))
+    }))
+}
+
 // ---------- archive catalog ----------
 
 #[tauri::command]
@@ -571,6 +580,7 @@ pub fn run() {
             organize_undo,
             compress_preview,
             start_compress,
+            start_compress_batch,
             cleanup_analyze,
             cleanup_recycle,
             empty_recycle_bin,

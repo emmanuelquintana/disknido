@@ -315,6 +315,34 @@ export interface CompressResult {
   catalogId: number;
 }
 
+export interface BatchProgress {
+  index: number;
+  count: number;
+  source: string;
+  phase: "reading" | "verifying" | "checking" | "recycling";
+  bytesDone: number;
+  bytesTotal: number;
+  current: string;
+}
+
+export interface BatchItem {
+  source: string;
+  result: CompressResult | null;
+  error: string | null;
+  /** The original folder is now in the Recycle Bin. */
+  recycled: boolean;
+  keptReason: string | null;
+}
+
+export interface BatchResult {
+  items: BatchItem[];
+  verified: number;
+  failed: number;
+  recycled: number;
+  bytesInBin: number;
+  saving: number;
+}
+
 export type CleanupConfidence = "high" | "medium" | "manual" | "protected";
 
 export interface CleanupCategory {

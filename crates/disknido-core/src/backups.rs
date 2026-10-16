@@ -396,7 +396,15 @@ fn in_tool_folder(path: &Path) -> bool {
             n.starts_with('.')
                 || matches!(
                     n.as_str(),
-                    "node_modules" | "xboxgames" | "steamapps" | "cache" | "caches" | "gamesave" | "crossdevice"
+                    "node_modules"
+                        | "xboxgames"
+                        | "games"
+                        | "steamapps"
+                        | "steamlibrary"
+                        | "cache"
+                        | "caches"
+                        | "gamesave"
+                        | "crossdevice"
                 )
         }
         _ => false,
@@ -580,6 +588,12 @@ pub fn list(conn: &Connection, root_name: &str) -> Result<Vec<BackupItem>> {
             no_date: ov.no_date,
         });
     }
+    // A folder moved or removed outside DiskNido since the scan: not listed,
+    // unless its drive is simply disconnected (then the index is all we have).
+    out.retain(|b| {
+        let p = Path::new(&b.path);
+        p.exists() || !Path::new(&format!("{}\\", b.volume)).exists()
+    });
     out.sort_by(|a, b| {
         (a.volume.clone(), a.year, a.month, a.name.clone()).cmp(&(b.volume.clone(), b.year, b.month, b.name.clone()))
     });

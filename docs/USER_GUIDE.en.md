@@ -59,11 +59,15 @@ or "Not a backup". **Organize**: folder name (default `Backups`), layout
 (Year\Year-Month or Year), optional folder per drive; **Preview** shows
 source → destination, status and the resulting tree. Moves stay within each
 drive, never merge or overwrite, and contents are counted before and after.
-Undo is available. **Compress**: choose folder, destination, name and level;
-**Review** shows size, free space and how much is already compressed; **Create
-verified ZIP** writes, reopens and compares every file (BLAKE3). Originals are
-always kept; you see source size, ZIP size and the potential saving *if* you
-later remove the original.
+Undo is available. **Compress**: add one or more folders (marked in Library, a backup from the
+list or any folder), the destination (next to each folder by default) and the
+level; **Review** shows size, free space and how much is already compressed;
+**Compress and verify** writes one ZIP per folder, reopens it and compares every
+file (BLAKE3). Originals are kept by default. With *send the original folder to
+the Recycle Bin* on, each folder is recycled only when its ZIP verified and the
+folder is still identical (same files, sizes and dates); otherwise it is kept
+and the reason is shown. Space is freed when the Recycle Bin is emptied, which
+the result offers with a separate confirmation.
 
 ## 8. Old folders
 Folders unchanged for 6/12/24/36 months or a custom period, with a minimum

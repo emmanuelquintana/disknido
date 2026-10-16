@@ -96,11 +96,16 @@ resultante. Nada se mueve hasta que confirmes. Cada respaldo se mueve dentro de
 su misma unidad, sin combinar ni sobrescribir; se cuenta su contenido antes y
 después. Puedes **deshacer** desde el resultado o desde el Historial.
 
-**Comprimir**: elige la carpeta, el destino, el nombre y el nivel. **Revisar**
-muestra tamaño, espacio libre y qué parte ya está comprimida. **Crear ZIP
-verificado** crea el ZIP, lo vuelve a abrir y compara cada archivo con el
-original (BLAKE3). Los originales se conservan siempre. Verás tamaño de
-origen, tamaño del ZIP y el ahorro potencial *si* después retiras el original.
+**Comprimir**: agrega una o varias carpetas (las marcadas en Biblioteca, un
+respaldo de la lista u otras carpetas), el destino (por defecto junto a cada
+carpeta) y el nivel. **Revisar** muestra tamaño, espacio libre y qué parte ya
+está comprimida. **Comprimir y verificar** crea un ZIP por carpeta, lo vuelve
+a abrir y compara cada archivo con el original (BLAKE3). Por defecto los
+originales se conservan. Si marcas *enviar la carpeta original a la Papelera*,
+cada carpeta va a la Papelera solo cuando su ZIP se verificó y la carpeta sigue
+idéntica (mismos archivos, tamaños y fechas); si no, se conserva y se explica
+por qué. El espacio se libera al vaciar la Papelera, que el resultado ofrece
+con una confirmación aparte.
 
 ## 8. Carpetas antiguas
 

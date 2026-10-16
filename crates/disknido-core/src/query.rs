@@ -469,8 +469,8 @@ pub fn search(conn: &Connection, needle: &str, limit: i64) -> Result<Vec<EntryVi
 /// Removes a path (file or folder with its contents) from the index after it
 /// left its location (sent to the Recycle Bin, moved), keeping folder totals
 /// and extension totals of every ancestor correct. Unknown paths are ignored.
-pub fn forget_path(conn: &Connection, path: &Path) -> Result<()> {
-    // Find the indexed root that contains the path, then walk down by name.
+/// The indexed root containing `path` (the deepest one) and the path relative to it.
+fn root_of(conn: &Connection, path: &Path) -> Result<Option<(i64, PathBuf)>> {
     let roots: Vec<(i64, String)> = {
         let mut st = conn.prepare("SELECT id, name FROM entries WHERE parent_id=0")?;
         st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
@@ -478,7 +478,7 @@ pub fn forget_path(conn: &Connection, path: &Path) -> Result<()> {
     let Some((root_id, root_name)) =
         roots.into_iter().filter(|(_, n)| safety::is_within(path, Path::new(n))).max_by_key(|(_, n)| n.len())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let rel = match path.strip_prefix(&root_name) {
         Ok(r) => r.to_path_buf(),
@@ -488,19 +488,96 @@ pub fn forget_path(conn: &Connection, path: &Path) -> Result<()> {
             path.components().skip(n).collect()
         }
     };
+    Ok(Some((root_id, rel)))
+}
+
+/// Ids from the root down to `rel`, or `None` if some part is not indexed.
+fn chain_of(conn: &Connection, root_id: i64, rel: &Path) -> Result<Option<Vec<i64>>> {
     let mut chain = vec![root_id];
-    let mut id = root_id;
-    let mut st = conn.prepare("SELECT id FROM entries WHERE parent_id=?1 AND name=?2 COLLATE NOCASE")?;
+    let mut st = conn.prepare_cached("SELECT id FROM entries WHERE parent_id=?1 AND name=?2 COLLATE NOCASE")?;
     for c in rel.components() {
         let name = c.as_os_str().to_string_lossy();
-        match st.query_row(params![id, name], |r| r.get::<_, i64>(0)).optional()? {
-            Some(child) => {
-                id = child;
-                chain.push(id);
-            }
-            None => return Ok(()),
+        match st.query_row(params![chain[chain.len() - 1], name], |r| r.get::<_, i64>(0)).optional()? {
+            Some(child) => chain.push(child),
+            None => return Ok(None),
         }
     }
+    Ok(Some(chain))
+}
+
+/// Updates the index after a folder was moved on the same drive (Organize):
+/// the entry and everything inside it now hang under `dst`, missing parent
+/// folders are added, and folder totals on both sides are adjusted. Falls
+/// back to forgetting `src` when `dst` is under another indexed root or none.
+pub fn move_path(conn: &Connection, src: &Path, dst: &Path) -> Result<()> {
+    let Some((root_id, rel)) = root_of(conn, src)? else { return Ok(()) };
+    let Some(chain) = chain_of(conn, root_id, &rel)? else { return Ok(()) };
+    if chain.len() < 2 {
+        return Ok(());
+    }
+    let (Some((dst_root, dst_rel)), Some(new_name)) = (root_of(conn, dst)?, dst.file_name()) else {
+        return forget_path(conn, src);
+    };
+    if dst_root != root_id {
+        return forget_path(conn, src);
+    }
+    let id = chain[chain.len() - 1];
+    let (size, files): (i64, i64) = conn.query_row(
+        "SELECT CASE WHEN is_dir=1 THEN COALESCE(total_size,0) ELSE size END,
+                CASE WHEN is_dir=1 THEN COALESCE(file_count,0) ELSE 1 END FROM entries WHERE id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let tx = conn.unchecked_transaction()?;
+    for anc in &chain[..chain.len() - 1] {
+        tx.execute(
+            "UPDATE entries SET total_size=MAX(COALESCE(total_size,0)-?2,0), file_count=MAX(COALESCE(file_count,0)-?3,0) WHERE id=?1",
+            params![anc, size, files],
+        )?;
+    }
+    // Walk (and create) the destination's parent folders.
+    let mut parent = root_id;
+    let mut new_chain = vec![root_id];
+    let parent_rel = dst_rel.parent().map(Path::to_path_buf).unwrap_or_default();
+    for c in parent_rel.components() {
+        let name = c.as_os_str().to_string_lossy().into_owned();
+        let found: Option<i64> = tx
+            .query_row("SELECT id FROM entries WHERE parent_id=?1 AND name=?2 COLLATE NOCASE", params![parent, name], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        parent = match found {
+            Some(x) => x,
+            None => {
+                // Next free id inside this root's id range.
+                let next: i64 =
+                    tx.query_row("SELECT MAX(id)+1 FROM entries WHERE id>=?1 AND id<?1+4294967296", [root_id], |r| r.get(0))?;
+                tx.execute(
+                    "INSERT INTO entries(id, parent_id, name, is_dir, size, mtime, ctime, attrs, ext, total_size, file_count,
+                                         newest_mtime, oldest_mtime, scan_id)
+                     SELECT ?1, ?2, ?3, 1, 0, mtime, ctime, 16, NULL, 0, 0, newest_mtime, oldest_mtime, scan_id FROM entries WHERE id=?4",
+                    params![next, parent, name, id],
+                )?;
+                next
+            }
+        };
+        new_chain.push(parent);
+    }
+    tx.execute("UPDATE entries SET parent_id=?2, name=?3 WHERE id=?1", params![id, parent, new_name.to_string_lossy()])?;
+    for anc in &new_chain {
+        tx.execute(
+            "UPDATE entries SET total_size=COALESCE(total_size,0)+?2, file_count=COALESCE(file_count,0)+?3 WHERE id=?1",
+            params![anc, size, files],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn forget_path(conn: &Connection, path: &Path) -> Result<()> {
+    let Some((root_id, rel)) = root_of(conn, path)? else { return Ok(()) };
+    let Some(chain) = chain_of(conn, root_id, &rel)? else { return Ok(()) };
+    let id = chain[chain.len() - 1];
     if chain.len() < 2 {
         return Ok(()); // never forget a whole root this way
     }

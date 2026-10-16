@@ -4,17 +4,22 @@
 //! hashed with BLAKE3 while it is streamed in, the archive is then reopened
 //! and every entry is decompressed and hashed again. Only when every hash and
 //! size matches — and the sources did not change meanwhile — is the file
-//! renamed to `<name>.zip`. Originals are never deleted here.
+//! renamed to `<name>.zip`. `compress` never touches the originals;
+//! `compress_batch` can send each original folder to the Recycle Bin, but
+//! only after its ZIP verified and only if the folder is still exactly what
+//! went into the ZIP.
 
 use crate::classify;
 use crate::fsx::{self, TreeEntry};
 use crate::{Control, Error, Result, ops, safety};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 const MARGIN: u64 = 64 * 1024 * 1024;
 
@@ -158,6 +163,9 @@ struct Manifest {
     size: u64,
     hash: blake3::Hash,
     mtime: i64,
+    /// Full-precision modification time (100 ns on NTFS) read before the file
+    /// was opened; used to prove the original did not change afterwards.
+    modified: Option<SystemTime>,
 }
 
 fn zip_name(rel: &Path) -> String {
@@ -177,6 +185,22 @@ pub fn compress(
     control: &Control,
     on_progress: &dyn Fn(&CompressProgress),
 ) -> Result<CompressResult> {
+    compress_verified(conn, req, control, on_progress).map(|v| v.result)
+}
+
+/// A verified archive plus what went into it.
+struct Verified {
+    result: CompressResult,
+    manifest: Vec<Manifest>,
+    dirs: usize,
+}
+
+fn compress_verified(
+    conn: &Connection,
+    req: &CompressRequest,
+    control: &Control,
+    on_progress: &dyn Fn(&CompressProgress),
+) -> Result<Verified> {
     let dest = check_paths(req)?;
     if dest.exists() {
         return Err(Error::Refused(format!("Ya existe {}; no se sobrescribe", dest.display())));
@@ -197,23 +221,18 @@ pub fn compress(
     ops::add_item(conn, op, 0, &req.source.to_string_lossy(), Some(&dest.to_string_lossy()))?;
     ops::item_status(conn, op, 0, "running", None)?;
 
-    let result = (|| -> Result<CompressResult> {
+    let dirs = tree.iter().filter(|e| e.item.is_dir && !e.item.is_link()).count();
+    let result = (|| -> Result<Verified> {
         let manifest =
             write_archive(&req.source, &tree, &partial, req.level.unwrap_or(6).clamp(1, 9), bytes, control, on_progress)?;
         // Sources must not have changed while we read them.
         for m in &manifest {
             let md = std::fs::metadata(req.source.join(&m.rel))?;
-            if md.len() != m.size || fsx::mtime_of(&md) != m.mtime {
+            if md.len() != m.size || md.modified().ok() != m.modified {
                 return Err(Error::Other(format!("«{}» cambió durante la compresión; el ZIP no se conserva", m.rel)));
             }
         }
-        verify_archive(
-            &partial,
-            &manifest,
-            tree.iter().filter(|e| e.item.is_dir && !e.item.is_link()).count(),
-            control,
-            on_progress,
-        )?;
+        verify_archive(&partial, &manifest, dirs, control, on_progress)?;
         fsx::rename_no_replace(&partial, &dest)?;
         let archive_bytes = std::fs::metadata(&dest)?.len();
         // Remember what is inside, so the catalog can answer "where is X?".
@@ -242,7 +261,7 @@ pub fn compress(
         if links > 0 {
             not_preserved.push(format!("{links} enlaces simbólicos o uniones (no se siguen ni se incluyen)"));
         }
-        Ok(CompressResult {
+        let result = CompressResult {
             op_id: op,
             archive: dest.to_string_lossy().into_owned(),
             files,
@@ -252,12 +271,13 @@ pub fn compress(
             verified: true,
             not_preserved,
             catalog_id,
-        })
+        };
+        Ok(Verified { result, manifest, dirs })
     })();
     match &result {
-        Ok(r) => {
+        Ok(v) => {
             ops::item_status(conn, op, 0, "done", None)?;
-            ops::finish(conn, op, "done", r.archive_bytes, None, None)?;
+            ops::finish(conn, op, "done", v.result.archive_bytes, None, None)?;
         }
         Err(e) => {
             let _ = std::fs::remove_file(&partial); // our own incomplete file
@@ -317,6 +337,7 @@ fn write_archive(
             opts
         };
         zip.start_file(&name, opts)?;
+        let modified = std::fs::metadata(src.join(&e.rel))?.modified().ok();
         let f = File::open(src.join(&e.rel))?;
         let mut r = HashingReader { inner: f, hasher: blake3::Hasher::new(), n: 0 };
         let mut buf = vec![0u8; 1 << 20];
@@ -335,6 +356,7 @@ fn write_archive(
             size: r.n,
             hash: r.hasher.finalize(),
             mtime: e.item.mtime,
+            modified,
         });
     }
     let mut w = zip.finish()?;
@@ -391,4 +413,172 @@ pub fn test_archive(path: &Path) -> Result<u64> {
         n += 1;
     }
     Ok(n)
+}
+
+/// The original folder is still exactly what went into the verified ZIP:
+/// the same files with the same sizes and full-precision modification times,
+/// nothing added or removed, no links (they are not stored in ZIPs), and the
+/// ZIP is still there with the same size and entry count.
+fn originals_unchanged(source: &Path, v: &Verified, control: &Control) -> Result<()> {
+    let refused = |m: String| Err(Error::Refused(format!("{m}; la carpeta original se conserva")));
+    if source.parent().is_none_or(|p| p.as_os_str().is_empty()) || source.file_name().is_none() {
+        return refused("Es la raíz de una unidad".into());
+    }
+    let tree = fsx::collect_tree(source, control)?;
+    if tree.iter().any(|e| e.item.is_link()) {
+        return refused("Contiene enlaces o uniones, que el ZIP no guarda".into());
+    }
+    if tree.iter().any(|e| e.item.is_cloud_only()) {
+        return refused("Contiene archivos que solo están en la nube".into());
+    }
+    let files: Vec<&TreeEntry> = tree.iter().filter(|e| !e.item.is_dir).collect();
+    let dirs = tree.len() - files.len();
+    if files.len() != v.manifest.len() || dirs != v.dirs {
+        return refused("Aparecieron o desaparecieron archivos o carpetas desde la compresión".into());
+    }
+    let by_rel: HashMap<&str, &Manifest> = v.manifest.iter().map(|m| (m.rel.as_str(), m)).collect();
+    for f in files {
+        control.checkpoint()?;
+        let rel = f.rel.to_string_lossy();
+        let Some(m) = by_rel.get(rel.as_ref()) else {
+            return refused(format!("«{rel}» no está en el ZIP"));
+        };
+        let md = std::fs::metadata(source.join(&f.rel))?;
+        if md.len() != m.size || md.modified().ok() != m.modified {
+            return refused(format!("«{rel}» cambió después de comprimir"));
+        }
+    }
+    let archive = Path::new(&v.result.archive);
+    if std::fs::metadata(archive)?.len() != v.result.archive_bytes {
+        return refused("El ZIP cambió después de verificarlo".into());
+    }
+    if zip::ZipArchive::new(File::open(archive)?)?.len() != v.manifest.len() + v.dirs {
+        return refused("El ZIP ya no tiene todas sus entradas".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRequest {
+    pub items: Vec<CompressRequest>,
+    /// After each ZIP is verified, send its original folder to the Recycle
+    /// Bin (only if the folder did not change; see `originals_unchanged`).
+    #[serde(default)]
+    pub recycle_originals: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchProgress {
+    /// 0-based position of the folder being processed.
+    pub index: usize,
+    pub count: usize,
+    pub source: String,
+    /// reading | verifying | checking | recycling
+    pub phase: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub current: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItem {
+    pub source: String,
+    /// Present when the ZIP was created and verified.
+    pub result: Option<CompressResult>,
+    pub error: Option<String>,
+    /// The original folder is now in the Recycle Bin.
+    pub recycled: bool,
+    /// Why the original was kept although removal was requested.
+    pub kept_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResult {
+    pub items: Vec<BatchItem>,
+    pub verified: usize,
+    pub failed: usize,
+    pub recycled: usize,
+    /// Size of the originals now in the Recycle Bin (freed when it is emptied).
+    pub bytes_in_bin: u64,
+    /// Source size minus archive size over the recycled originals.
+    pub saving: i64,
+}
+
+/// Compresses several folders one after another, each into its own verified
+/// ZIP. A failure stops only that folder. With `recycle_originals`, each
+/// original goes to the Recycle Bin right after its own ZIP verified.
+pub fn compress_batch(
+    conn: &Connection,
+    req: &BatchRequest,
+    control: &Control,
+    on_progress: &dyn Fn(&BatchProgress),
+) -> Result<BatchResult> {
+    let keys: Vec<String> = req.items.iter().map(|i| safety::path_key(&i.source)).collect();
+    let count = req.items.len();
+    let mut out = Vec::with_capacity(count);
+    for (idx, item) in req.items.iter().enumerate() {
+        if control.is_cancelled() {
+            break;
+        }
+        let source = item.source.to_string_lossy().into_owned();
+        let mut bi = BatchItem { source: source.clone(), result: None, error: None, recycled: false, kept_reason: None };
+        let report = |phase: &str, done: u64, total: u64, current: &str| {
+            on_progress(&BatchProgress {
+                index: idx,
+                count,
+                source: source.clone(),
+                phase: phase.into(),
+                bytes_done: done,
+                bytes_total: total,
+                current: current.into(),
+            })
+        };
+        // A folder inside another one of the list would be compressed twice
+        // and could be removed together with its parent.
+        let nested = keys.iter().enumerate().any(|(j, k)| {
+            j != idx && ((k == &keys[idx] && j < idx) || (safety::is_within(&item.source, Path::new(k)) && k != &keys[idx]))
+        });
+        if nested {
+            bi.error = Some("Está repetida o dentro de otra carpeta de la lista".into());
+            out.push(bi);
+            continue;
+        }
+        report("reading", 0, 0, "");
+        match compress_verified(conn, item, control, &|p| report(&p.phase, p.bytes_done, p.bytes_total, &p.current)) {
+            Ok(v) => {
+                if req.recycle_originals {
+                    report("checking", 0, 0, "");
+                    let target = crate::recycle::RecycleTarget { path: item.source.clone(), expected: None };
+                    let check = |_: &crate::recycle::RecycleTarget| originals_unchanged(&item.source, &v, control);
+                    report("recycling", 0, 0, "");
+                    match crate::recycle::recycle(conn, "compressed_original", &[target], false, control, &check) {
+                        Ok(r) if r.recycled == 1 => bi.recycled = true,
+                        Ok(r) => bi.kept_reason = Some(r.messages.join(" · ")),
+                        Err(e) => bi.kept_reason = Some(e.to_string()),
+                    }
+                }
+                bi.result = Some(v.result);
+            }
+            Err(Error::Cancelled) => {
+                bi.error = Some(Error::Cancelled.to_string());
+                out.push(bi);
+                break;
+            }
+            Err(e) => bi.error = Some(e.to_string()),
+        }
+        out.push(bi);
+    }
+    let recycled: Vec<&CompressResult> = out.iter().filter(|i| i.recycled).filter_map(|i| i.result.as_ref()).collect();
+    Ok(BatchResult {
+        verified: out.iter().filter(|i| i.result.is_some()).count(),
+        failed: out.iter().filter(|i| i.error.is_some()).count(),
+        recycled: recycled.len(),
+        bytes_in_bin: recycled.iter().map(|r| r.source_bytes).sum(),
+        saving: recycled.iter().map(|r| r.potential_saving).sum(),
+        items: out,
+    })
 }

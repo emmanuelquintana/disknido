@@ -28,6 +28,10 @@
 * **Backup detection skips tool folders** (names starting with `.`,
   node_modules, XboxGames, steamapps, caches) and folders under 1 MB without a
   date; a real backup with such a name has to be found in the explorer.
+* **Removing originals after compressing frees space only when the Recycle
+  Bin is emptied.** A folder larger than the bin's limit makes Windows ask to
+  delete it permanently instead; answering no keeps it. Folders with links
+  inside are always kept (ZIPs do not store links).
 * **Organisation is per volume.** Cross-volume moves (verified copy then
   remove) are not implemented.
 * **Recycle Bin paths limited to MAX_PATH** (Windows shell API). Longer paths

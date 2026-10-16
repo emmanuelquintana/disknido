@@ -3,10 +3,10 @@ import { Archive, ArrowRight, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { Badge, ConfirmDialog, EmptyState, Meter, Notice, PageHeader, PathActions, PathText, Stat, useAsync, type Tone } from "../components/ui";
-import { baseName, formatBytes, formatDate, formatNumber, formatPercent, monthName } from "../format";
+import { baseName, formatBytes, formatDate, formatNumber, monthName } from "../format";
 import { useLang, useT, type Key } from "../i18n";
 import { isRunning, useApp } from "../state";
-import type { BackupItem, CompressPreview, CompressProgress, CompressResult, ExecResult, Plan, PlanItem } from "../types";
+import type { BackupItem, BatchProgress, BatchResult, CompressPreview, CompressRequest, CompressResult, ExecResult, Plan, PlanItem } from "../types";
 
 type Tab = "library" | "organize" | "compress";
 const CONF_TONE: Record<BackupItem["confidence"], Tone> = { high: "success", medium: "accent", review: "warning" };
@@ -471,74 +471,182 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
   );
 }
 
-export function Compress({ items, initialSource }: { items: BackupItem[]; initialSource?: string }) {
+/** Compresses one or several folders, each into its own verified ZIP. With
+ *  the option on, each original goes to the Recycle Bin only after its ZIP
+ *  verified and only if the folder did not change (checked in Rust). */
+export function Compress({ items, initialSource, marked }: { items: BackupItem[]; initialSource?: string; marked: Set<string> }) {
   const t = useT();
   const lang = useLang();
   const { settings, trackTask, latest, toast, navigate } = useApp();
-  const [source, setSource] = useState(initialSource ?? "");
+  const [queue, setQueue] = useState<string[]>(initialSource ? [initialSource] : []);
   const [destDir, setDestDir] = useState("");
   const [name, setName] = useState("");
   const [level, setLevel] = useState(settings.compressionLevel);
-  const [preview, setPreview] = useState<CompressPreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [recycleOriginals, setRecycleOriginals] = useState(false);
+  const [previews, setPreviews] = useState<Record<string, CompressPreview | { error: string }>>({});
+  const [reviewing, setReviewing] = useState<number | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
   const task = latest("compress");
   const running = isRunning(task);
-  const prog = task?.progress as CompressProgress | null;
-  const result = task?.done?.ok ? (task.done.result as CompressResult) : null;
-  const req = () => ({ source, destDir: destDir || source.replace(/[\\/][^\\/]+[\\/]?$/, ""), name: name || null, level });
+  const prog = task?.progress as BatchProgress | null;
+  const result = task?.done?.ok ? (task.done.result as BatchResult | CompressResult) : null;
+  const batch = result && "items" in result ? result : null;
+  const byPath = useMemo(() => new Map(items.map((i) => [i.path, i])), [items]);
+  // "E:\\Backup" → "E:\\" (a bare "E:" would mean the current folder of E:).
+  const parentOf = (p: string) => p.replace(/[\\/][^\\/]+[\\/]?$/, "").replace(/^([A-Za-z]:)$/, "$1\\");
+  const req = (source: string): CompressRequest => ({
+    source,
+    destDir: destDir || parentOf(source),
+    name: queue.length === 1 && name ? name : null,
+    level,
+  });
+  const reset = () => setPreviews({});
+  const add = (paths: string[]) => {
+    setQueue((q) => [...q, ...paths.filter((p) => !q.includes(p))]);
+    reset();
+  };
+  const okPreview = (p: string) => {
+    const v = previews[p];
+    return v && !("error" in v) && v.problems.length === 0 ? v : null;
+  };
+  const ready = queue.filter((p) => okPreview(p));
+  const reviewed = queue.length > 0 && queue.every((p) => previews[p]);
 
-  const doPreview = async () => {
-    setError(null);
-    try {
-      setPreview(await api.compressPreview(req()));
-    } catch (e) {
-      setPreview(null);
-      setError(errorText(e));
+  // Space needed per destination drive (worst case: a ZIP as big as its source).
+  const space = new Map<string, { need: number; free: number | null }>();
+  for (const p of ready) {
+    const v = okPreview(p)!;
+    const drive = v.dest.slice(0, 2).toUpperCase();
+    const s = space.get(drive) ?? { need: 0, free: v.destFree };
+    s.need += v.bytes;
+    space.set(drive, s);
+  }
+  const short = [...space.entries()].filter(([, s]) => s.free != null && s.need > s.free);
+
+  const review = async () => {
+    const out: Record<string, CompressPreview | { error: string }> = {};
+    for (const [i, p] of queue.entries()) {
+      setReviewing(i);
+      try {
+        out[p] = await api.compressPreview(req(p));
+      } catch (e) {
+        out[p] = { error: errorText(e) };
+      }
+      setPreviews({ ...out });
     }
+    setReviewing(null);
   };
   const start = async () => {
+    setConfirm(false);
     try {
-      trackTask(await api.startCompress(req()), "compress");
+      trackTask(await api.startCompressBatch({ items: ready.map(req), recycleOriginals }), "compress");
     } catch (e) {
       toast(errorText(e));
     }
   };
+  const emptyBin = async () => {
+    setConfirmEmpty(false);
+    try {
+      const r = await api.emptyRecycleBin();
+      toast(`${t("cleanup.emptyBin").replace("…", "")}: ${formatBytes(r.bytes, lang)}`);
+    } catch (e) {
+      toast(errorText(e));
+    }
+  };
+  const phaseText = (p?: string) =>
+    p === "verifying" ? t("compress.verifying") : p === "checking" ? t("compress.phase.checking") : p === "recycling" ? t("compress.phase.recycling") : t("compress.reading");
+  const notQueued = items.filter((i) => !queue.includes(i.path) && !i.protectedReason);
+  const markedNew = [...marked].filter((p) => !queue.includes(p));
 
   return (
     <div className="stack">
       <div className="card stack">
         <h2 className="section-title">{t("compress.title")}</h2>
         <Notice>{t("compress.explain")}</Notice>
-        <div className="grid grid-2" style={{ gap: 12 }}>
-          <label className="field">
-            <span>{t("compress.source")}</span>
-            <div className="row">
-              <select className="select" style={{ flex: 1, minWidth: 0 }} value={source} onChange={(e) => { setSource(e.target.value); setPreview(null); }}>
-                <option value="">{t("compress.selectSource")}</option>
-                {source && !items.some((i) => i.path === source) && <option value={source}>{source}</option>}
-                {items.map((i) => (
-                  <option key={i.path} value={i.path}>
-                    {i.name} — {i.path}
-                  </option>
-                ))}
-              </select>
-              <button className="btn" onClick={async () => { const p = await open({ directory: true }); if (typeof p === "string") { setSource(p); setPreview(null); } }}>
-                {t("compress.choose")}
+
+        <div className="stack" style={{ gap: 8 }}>
+          <strong>{t("compress.queue", { n: queue.length })}</strong>
+          {queue.length === 0 ? (
+            <p className="caption">{t("compress.queueEmpty")}</p>
+          ) : (
+            <ul className="dup-list">
+              {queue.map((p) => {
+                const v = previews[p];
+                const known = byPath.get(p);
+                return (
+                  <li key={p} className="dup-row">
+                    <div style={{ minWidth: 0 }}>
+                      <PathText path={p} />
+                      <span className="row caption" style={{ flexWrap: "wrap" }}>
+                        {v && !("error" in v) ? (
+                          <>
+                            {formatBytes(v.bytes, lang)} · {t("common.files", { n: formatNumber(v.files, lang) })} → {baseName(v.dest)}
+                          </>
+                        ) : known ? (
+                          <>
+                            {formatBytes(known.size, lang)} · {t("common.files", { n: formatNumber(known.fileCount, lang) })}
+                          </>
+                        ) : null}
+                        {v && "error" in v && <Badge tone="danger">{v.error}</Badge>}
+                        {v && !("error" in v) && v.problems.map((x) => <Badge key={x} tone="danger">{x}</Badge>)}
+                        {v && !("error" in v) && v.problems.length === 0 && <Badge tone="success">{t("compress.ready")}</Badge>}
+                        {v && !("error" in v) && recycleOriginals && v.links > 0 && <Badge tone="warning">{t("compress.linksKept")}</Badge>}
+                      </span>
+                    </div>
+                    <PathActions path={p} />
+                    <button
+                      className="btn btn-sm btn-subtle"
+                      disabled={running || reviewing != null}
+                      onClick={() => {
+                        setQueue((q) => q.filter((x) => x !== p));
+                        reset();
+                      }}
+                    >
+                      {t("compress.remove")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            {markedNew.length > 0 && (
+              <button className="btn btn-sm" disabled={running} onClick={() => add(markedNew)}>
+                {t("compress.addMarked", { n: markedNew.length })}
               </button>
-            </div>
-          </label>
+            )}
+            <select className="select" style={{ maxWidth: 360 }} value="" disabled={running} aria-label={t("compress.addBackup")} onChange={(e) => e.target.value && add([e.target.value])}>
+              <option value="">{t("compress.addBackup")}</option>
+              {notQueued.map((i) => (
+                <option key={i.path} value={i.path}>
+                  {i.name} — {i.path}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn btn-sm"
+              disabled={running}
+              onClick={async () => {
+                const p = await open({ directory: true, multiple: true });
+                if (typeof p === "string") add([p]);
+                else if (Array.isArray(p)) add(p);
+              }}
+            >
+              {t("compress.addFolder")}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-2" style={{ gap: 12 }}>
           <label className="field">
             <span>{t("compress.dest")}</span>
             <div className="row">
-              <input className="input" style={{ flex: 1, minWidth: 0 }} value={destDir} placeholder={source ? source.replace(/[\\/][^\\/]+[\\/]?$/, "") : ""} onChange={(e) => setDestDir(e.target.value)} />
-              <button className="btn" onClick={async () => { const p = await open({ directory: true }); if (typeof p === "string") setDestDir(p); }}>
+              <input className="input" style={{ flex: 1, minWidth: 0 }} value={destDir} placeholder={t("compress.destNextTo")} onChange={(e) => { setDestDir(e.target.value); reset(); }} />
+              <button className="btn" onClick={async () => { const p = await open({ directory: true }); if (typeof p === "string") { setDestDir(p); reset(); } }}>
                 {t("compress.choose")}
               </button>
             </div>
-          </label>
-          <label className="field">
-            <span>{t("compress.name")}</span>
-            <input className="input" value={name} placeholder={source ? baseName(source) : ""} onChange={(e) => setName(e.target.value)} />
           </label>
           <label className="field">
             <span>{t("compress.level")}</span>
@@ -548,97 +656,170 @@ export function Compress({ items, initialSource }: { items: BackupItem[]; initia
               <option value={9}>{t("compress.level.small")}</option>
             </select>
           </label>
+          {queue.length === 1 && (
+            <label className="field">
+              <span>{t("compress.name")}</span>
+              <input className="input" value={name} placeholder={baseName(queue[0]!)} onChange={(e) => { setName(e.target.value); reset(); }} />
+            </label>
+          )}
         </div>
+
+        <label className="row" style={{ alignItems: "flex-start", gap: 10 }}>
+          <input type="checkbox" checked={recycleOriginals} disabled={running} onChange={(e) => setRecycleOriginals(e.target.checked)} style={{ marginTop: 4 }} />
+          <span>
+            <strong>{t("compress.recycleOriginals")}</strong>
+            <br />
+            <span className="caption">{t("compress.recycleRules")}</span>
+          </span>
+        </label>
+
         <div className="actions">
-          <button className="btn" disabled={!source || running} onClick={doPreview}>
-            {t("compress.preview")}
+          <button className="btn" disabled={queue.length === 0 || running || reviewing != null} onClick={review} aria-busy={reviewing != null}>
+            {reviewing != null ? t("compress.reviewing", { i: reviewing + 1, n: queue.length }) : t("compress.reviewN", { n: queue.length })}
           </button>
-          <button className="btn btn-primary" disabled={!preview || preview.problems.length > 0 || running} onClick={start}>
-            {t("compress.start")}
+          <button className="btn btn-primary" disabled={!reviewed || ready.length === 0 || running || reviewing != null} onClick={() => (recycleOriginals ? setConfirm(true) : start())}>
+            {t("compress.startN", { n: ready.length })}
           </button>
         </div>
-        {error && <Notice tone="danger">{error}</Notice>}
-        {preview && (
-          <div className="stack">
-            <div className="grid grid-stats">
-              <Stat value={formatBytes(preview.bytes, lang)} label={t("compress.sourceSize")} />
-              <Stat value={formatNumber(preview.files, lang)} label={t("common.files", { n: "" }).trim()} />
-              {preview.destFree != null && <Stat value={formatBytes(preview.destFree, lang)} label={t("compress.destFree", { size: "" }).replace(":", "").trim()} />}
-            </div>
-            <PathText path={preview.dest} className="caption" />
-            {preview.alreadyCompressedShare > 0.3 && <Notice tone="warning">{t("compress.alreadyCompressed", { pct: formatPercent(preview.alreadyCompressedShare, lang) })}</Notice>}
-            {preview.problems.map((p) => (
-              <Notice key={p} tone="danger">
-                {p}
-              </Notice>
-            ))}
-            <p className="caption">{t("compress.keepNote")}</p>
+        {reviewed && ready.length > 0 && (
+          <div className="grid grid-stats">
+            <Stat value={formatBytes(ready.reduce((a, p) => a + okPreview(p)!.bytes, 0), lang)} label={t("compress.sourceSize")} />
+            <Stat value={formatNumber(ready.reduce((a, p) => a + okPreview(p)!.files, 0), lang)} label={t("common.files", { n: "" }).trim()} />
           </div>
         )}
+        {short.map(([drive, s]) => (
+          <Notice key={drive} tone="warning">
+            {t("compress.spaceShort", { drive, need: formatBytes(s.need, lang), free: formatBytes(s.free ?? 0, lang) })}
+          </Notice>
+        ))}
+        {reviewed && ready.some((p) => okPreview(p)!.alreadyCompressedShare > 0.3) && <Notice tone="warning">{t("compress.someAlreadyCompressed")}</Notice>}
+        {!recycleOriginals && <p className="caption">{t("compress.keepNote")}</p>}
       </div>
+
       {running && (
-        <div className="card" aria-live="polite">
+        <div className="card stack" aria-live="polite">
           <div className="row-between">
-            <strong>{prog?.phase === "verifying" ? t("compress.verifying") : t("compress.reading")}</strong>
-            {prog && (
+            <strong>
+              {prog && prog.count ? `${t("compress.progressItem", { i: prog.index + 1, n: prog.count })} · ` : ""}
+              {phaseText(prog?.phase)}
+            </strong>
+            {prog && prog.bytesTotal > 0 && (
               <span className="caption num">
                 {formatBytes(prog.bytesDone, lang)} / {formatBytes(prog.bytesTotal, lang)}
               </span>
             )}
           </div>
-          <div style={{ margin: "8px 0" }}>
-            <Meter value={prog?.bytesTotal ? prog.bytesDone / prog.bytesTotal : null} label={t("compress.reading")} />
-          </div>
+          {prog?.source && <PathText path={prog.source} />}
+          <Meter value={prog?.bytesTotal ? prog.bytesDone / prog.bytesTotal : null} label={phaseText(prog?.phase)} />
+          {prog && prog.count > 1 && <Meter value={prog.index / prog.count} label={t("compress.overall")} />}
           {prog?.current && <PathText path={prog.current} className="caption" />}
           {task && (
-            <button className="btn btn-sm" onClick={() => api.cancelTask(task.id)}>
+            <button className="btn btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => api.cancelTask(task.id)}>
               {t("common.cancel")}
             </button>
           )}
         </div>
       )}
+
       {task?.done && !running && (
         <div className="card stack">
           {task.done.error && <Notice tone="danger">{task.done.error}</Notice>}
           {task.done.cancelled && <Notice tone="warning">{t("history.status.cancelled")}</Notice>}
-          {result && (
+          {batch && (
             <>
               <div className="row-between">
                 <h2 className="section-title" style={{ margin: 0 }}>
-                  {t("compress.done")}
+                  {t("compress.batchDone")}
                 </h2>
-                <Badge tone="success">
-                  <ShieldCheck size={14} aria-hidden /> {t("compress.verifiedBadge")}
+                <Badge tone={batch.failed ? "warning" : "success"}>
+                  <ShieldCheck size={14} aria-hidden /> {t("compress.verifiedCount", { n: batch.verified, total: batch.items.length })}
                 </Badge>
               </div>
-              <div className="grid grid-stats">
-                <Stat value={formatBytes(result.sourceBytes, lang)} label={t("compress.sourceSize")} />
-                <Stat value={formatBytes(result.archiveBytes, lang)} label={t("compress.archiveSize")} />
-                <Stat value={formatBytes(result.potentialSaving, lang)} label={t("compress.potential")} />
+              <div style={{ overflow: "auto" }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>{t("compress.col.folder")}</th>
+                      <th className="shrink">{t("compress.col.size")}</th>
+                      <th className="shrink">{t("common.status")}</th>
+                      <th className="shrink">{t("compress.col.original")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batch.items.map((it) => (
+                      <tr key={it.source}>
+                        <td style={{ minWidth: 0 }}>
+                          <PathText path={it.source} />
+                          {it.result && (
+                            <span className="row caption">
+                              → <PathText path={it.result.archive} />
+                              <PathActions path={it.result.archive} />
+                            </span>
+                          )}
+                        </td>
+                        <td className="num shrink">
+                          {it.result ? `${formatBytes(it.result.sourceBytes, lang)} → ${formatBytes(it.result.archiveBytes, lang)}` : "—"}
+                        </td>
+                        <td className="shrink">
+                          {it.result ? <Badge tone="success">{t("compress.verifiedBadge")}</Badge> : <Badge tone="danger" title={it.error ?? ""}>{t("common.error")}</Badge>}
+                          {it.error && <div className="caption">{it.error}</div>}
+                        </td>
+                        <td className="shrink">
+                          {it.recycled ? (
+                            <Badge tone="accent">{t("compress.original.inBin")}</Badge>
+                          ) : (
+                            <>
+                              <Badge>{t("compress.original.kept")}</Badge>
+                              {it.keptReason && <div className="caption">{it.keptReason}</div>}
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="row">
-                <PathText path={result.archive} />
-                <PathActions path={result.archive} />
-              </div>
-              <p className="caption">{t("compress.keepNote")}</p>
+              {batch.recycled > 0 && (
+                <Notice>
+                  <div className="stack" style={{ gap: 8 }}>
+                    <span>{t("compress.binNote", { n: batch.recycled, size: formatBytes(batch.bytesInBin, lang), saving: formatBytes(Math.max(0, batch.saving), lang) })}</span>
+                    <button className="btn btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => setConfirmEmpty(true)}>
+                      {t("cleanup.emptyBin")}
+                    </button>
+                  </div>
+                </Notice>
+              )}
               <div className="row">
                 <span className="caption">{t("compress.inCatalog")}</span>
-                <button className="btn btn-sm" onClick={() => navigate("catalog", { archive: String(result.catalogId) })}>
+                <button className="btn btn-sm" onClick={() => navigate("catalog")}>
                   {t("compress.openCatalog")}
                 </button>
               </div>
-              <details className="disclosure">
-                <summary>{t("compress.notPreserved")}</summary>
-                <ul>
-                  {result.notPreserved.map((n) => (
-                    <li key={n}>{n}</li>
-                  ))}
-                </ul>
-              </details>
             </>
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={confirm}
+        title={t("compress.confirmTitle", { n: ready.length })}
+        body={
+          <>
+            <p>{t("compress.confirmBody")}</p>
+            <p>{t("cleanup.binNote")}</p>
+          </>
+        }
+        confirmLabel={t("compress.startN", { n: ready.length })}
+        onConfirm={start}
+        onClose={() => setConfirm(false)}
+      />
+      <ConfirmDialog
+        open={confirmEmpty}
+        title={t("cleanup.emptyBinTitle")}
+        body={<p>{t("compress.emptyBinBody")}</p>}
+        confirmLabel={t("cleanup.emptyBin").replace("…", "")}
+        onConfirm={emptyBin}
+        onClose={() => setConfirmEmpty(false)}
+      />
     </div>
   );
 }
@@ -686,7 +867,7 @@ export function BackupsPage() {
         <div className="stack">
           {tab === "library" && <Library items={items} selected={sel} setSelected={setSelected} reload={list.reload} />}
           {tab === "organize" && <Organize items={items} selected={sel} onDone={list.reload} />}
-          {tab === "compress" && <Compress items={items} initialSource={params.source} />}
+          {tab === "compress" && <Compress items={items} initialSource={params.source} marked={selected ?? new Set()} />}
         </div>
       )}
     </>

@@ -6,7 +6,8 @@ import { CategoryCard } from "../features/Cleanup";
 import { GroupCard } from "../features/Duplicates";
 import { HomePage } from "../features/Home";
 import { ScanPage } from "../features/Scan";
-import type { CleanupCategory, DupGroup, IndexedRoot, Overview, Volume } from "../types";
+import { Compress } from "../features/Backups";
+import type { BackupItem, CleanupCategory, DupGroup, IndexedRoot, Overview, Volume } from "../types";
 import { mockCommands, renderApp } from "./utils";
 
 const vol = (letter: string, extra: Partial<Volume> = {}): Volume => ({
@@ -235,5 +236,43 @@ describe("archive catalog", () => {
     expect(await screen.findByText("Cancún.jpg")).toBeInTheDocument();
     expect(screen.getByTitle("D:\\Backups\\Backup Enero 2025.zip")).toBeInTheDocument();
     expect(searched.at(-1)).toBe("cancun");
+  });
+});
+
+describe("compress", () => {
+  it("compresses several folders and asks before sending originals to the bin", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const a = "D:\\Backups\\Backup 2021";
+    const b = "E:\\Backup febrero 2025";
+    const item = (path: string) => ({ path, name: path.split("\\").pop(), size: 1000, fileCount: 3 }) as unknown as BackupItem;
+    mockCommands({
+      compress_preview: (x: Record<string, unknown>) => {
+        const r = x.request as { source: string; destDir: string };
+        return { source: r.source, dest: `${r.destDir}\\${r.source.split("\\").pop()}.zip`, files: 3, folders: 1, bytes: 1000, alreadyCompressedShare: 0, destFree: 10 ** 12, enoughSpace: true, cloudOnly: 0, links: 0, destExists: false, problems: [] };
+      },
+      start_compress_batch: (x: Record<string, unknown>) => {
+        calls.push(x.request as Record<string, unknown>);
+        return "task-1";
+      },
+    });
+    renderApp(<Compress items={[item(a), item(b)]} marked={new Set([a, b])} />);
+    await userEvent.click(screen.getByRole("button", { name: "Agregar las 2 marcadas en Biblioteca" }));
+    const start = screen.getByRole("button", { name: "Comprimir y verificar (0)" });
+    expect(start).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Revisar (2)" }));
+    const ready = await screen.findByRole("button", { name: "Comprimir y verificar (2)" });
+    await userEvent.click(screen.getByRole("checkbox", { name: /enviar la carpeta original a la Papelera/ }));
+    await userEvent.click(ready);
+    const dialog = await screen.findByRole("dialog");
+    expect(calls).toHaveLength(0);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Comprimir y verificar (2)" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toMatchObject({
+      recycleOriginals: true,
+      items: [
+        { source: a, destDir: "D:\\Backups", name: null },
+        { source: b, destDir: "E:\\", name: null },
+      ],
+    });
   });
 });

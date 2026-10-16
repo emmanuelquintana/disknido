@@ -49,6 +49,18 @@ Fixes from testing on real drives (5.4 M files, 4.4 TB).
 - Backups → Organize: the preview appears at once (it uses the index counts;
   before it walked every file and seemed to do nothing for minutes) and scrolls
   into view; moving still counts the files and verifies the destination.
+- Compress several folders in one go, each into its own verified ZIP, with
+  per-folder and overall progress and a per-folder result.
+- Optional (off by default, confirmed): after each ZIP verifies, its original
+  folder goes to the Recycle Bin only if it is still identical to what went
+  into the ZIP; otherwise it is kept and the reason is shown. Then the result
+  offers to empty the Recycle Bin to free the space.
+- Organizing updates the index: moved backups appear at their new place at
+  once (and back again after Undo), without a new scan. Backups whose folder no
+  longer exists are not listed while their drive is connected; game folders
+  (`Games`, `SteamLibrary`) are not listed as backups.
+- Compressing a folder at the root of a drive (`E:\Backup`) saved the ZIP to
+  `E:` (the drive's current folder) instead of `E:\`.
 
 ## [0.1.0] — unreleased
 

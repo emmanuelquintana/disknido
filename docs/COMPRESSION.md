@@ -16,8 +16,13 @@ on Windows 10, and ZIP covers the goal. See DECISIONS.
 
 ## Safety model
 
-* The default and only mode is **create the archive and keep the originals**.
-  DiskNido never deletes the source folder.
+* The default is **create the archive and keep the originals**. Several folders
+  can be queued; each gets its own ZIP, one after another, and a failure stops
+  only that folder (`compress_batch`). Nested or repeated folders in the same
+  list are refused.
+* Optional, off by default and confirmed in a dialog: **send each original to
+  the Recycle Bin after its ZIP verified** (see below). DiskNido never deletes
+  anything permanently; space is freed when the user empties the Recycle Bin.
 * The archive is written to `<name>.zip.partial` (created with `create_new`, so
   nothing is overwritten) and renamed to `<name>.zip` only after verification,
   with a rename that refuses to replace an existing file.
@@ -42,6 +47,28 @@ on Windows 10, and ZIP covers the goal. See DECISIONS.
 Only then does the UI show "ZIP creado y verificado". `test_archive` can also
 re-check an existing ZIP (CRC of every entry); a corrupted ZIP is detected
 (tested).
+
+## Removing originals after a verified ZIP
+
+With the option on, right after a folder's ZIP verified (steps 1–3) and
+before it is sent to the Recycle Bin, `originals_unchanged` walks the folder
+again and requires:
+
+* exactly the same files and folders as went into the ZIP (none added, none
+  removed);
+* every file with the same size and the same full-precision modification time
+  (100 ns on NTFS) read just before it was archived;
+* no symlinks or junctions (ZIPs do not store them) and no cloud-only files;
+* the ZIP still present with the same size and entry count;
+* not a drive root and not a protected location.
+
+If any check fails the folder is kept and the reason is shown in the result.
+The folder goes through the same Recycle Bin path as every other removal
+(`SHFileOperationW` with `FOF_ALLOWUNDO`); if Windows cannot recycle it
+(for example the folder is larger than the bin allows) Windows itself asks
+before deleting permanently, and the user can say no. The index forgets the
+folder at once. The result screen offers to empty the Recycle Bin, with a
+separate danger confirmation.
 
 ## What a ZIP does not preserve
 

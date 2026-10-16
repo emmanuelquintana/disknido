@@ -324,6 +324,8 @@ pub fn execute(conn: &Connection, items: &[PlanItem], control: &Control, on_item
                 done += 1;
                 moved_bytes += it.bytes;
                 ops::item_status(conn, op, seq, "done", None)?;
+                // Lists show the folder at its new place without a new scan.
+                crate::query::move_path(conn, Path::new(&it.src), Path::new(&it.dst))?;
             }
             Err(e) => {
                 failed += 1;
@@ -387,6 +389,7 @@ pub fn undo(conn: &Connection, op: i64, control: &Control) -> Result<ExecResult>
             Ok(()) => {
                 done += 1;
                 ops::item_status(conn, op, it.seq, "reverted", None)?;
+                crate::query::move_path(conn, Path::new(dst), Path::new(&it.src))?;
             }
             Err(e) => {
                 failed += 1;

@@ -140,3 +140,58 @@ fn corrupted_archive_is_detected() {
     std::fs::write(&r.archive, data).unwrap();
     assert!(compress::test_archive(Path::new(&r.archive)).is_err());
 }
+
+fn batch(items: Vec<CompressRequest>, recycle_originals: bool) -> compress::BatchRequest {
+    compress::BatchRequest { items, recycle_originals }
+}
+
+#[test]
+fn batch_recycles_only_originals_that_match_their_verified_zip() {
+    let tmp = fixture_root();
+    let a = tmp.path().join("Backup A 2021");
+    let b = tmp.path().join("Backup B 2022");
+    write(&a.join("docs/a.txt"), "aaa ".repeat(10_000).as_bytes());
+    write(&b.join("b.txt"), "bbb ".repeat(10_000).as_bytes());
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let conn = db::open(&db(tmp.path())).unwrap();
+    let phases = std::sync::Mutex::new(Vec::new());
+    let r = compress::compress_batch(&conn, &batch(vec![req(&a, &out), req(&b, &out)], true), &Control::default(), &|p| {
+        phases.lock().unwrap().push((p.index, p.phase.clone()));
+        // A file appears in B after its ZIP verified: B must be kept.
+        if p.index == 1 && p.phase == "checking" {
+            write(&b.join("nuevo.txt"), b"added after the zip");
+        }
+    })
+    .unwrap();
+    assert_eq!((r.verified, r.failed, r.recycled), (2, 0, 1));
+    assert!(r.items[0].recycled && !a.exists(), "A matched its ZIP and went to the Recycle Bin");
+    assert!(!r.items[1].recycled && b.join("b.txt").exists() && b.join("nuevo.txt").exists());
+    assert!(r.items[1].kept_reason.as_deref().unwrap().contains("se conserva"), "{:?}", r.items[1].kept_reason);
+    assert!(out.join("Backup A 2021.zip").exists() && out.join("Backup B 2022.zip").exists());
+    assert_eq!(r.bytes_in_bin, r.items[0].result.as_ref().unwrap().source_bytes);
+    let p = phases.into_inner().unwrap();
+    assert!(p.contains(&(0, "verifying".into())) && p.contains(&(0, "recycling".into())));
+
+    // The ZIP of the recycled folder holds every byte of it.
+    let mut z = zip::ZipArchive::new(std::fs::File::open(out.join("Backup A 2021.zip")).unwrap()).unwrap();
+    let mut buf = String::new();
+    z.by_name("docs/a.txt").unwrap().read_to_string(&mut buf).unwrap();
+    assert_eq!(buf, "aaa ".repeat(10_000));
+}
+
+#[test]
+fn batch_without_removal_keeps_originals_and_refuses_nested_or_repeated() {
+    let tmp = fixture_root();
+    let p = tmp.path().join("Padre");
+    write(&p.join("hijo/x.txt"), b"x");
+    write(&p.join("y.txt"), b"y");
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let conn = db::open(&db(tmp.path())).unwrap();
+    let items = vec![req(&p, &out), req(&p.join("hijo"), &out), req(&p, &out)];
+    let r = compress::compress_batch(&conn, &batch(items, false), &Control::default(), &|_| {}).unwrap();
+    assert_eq!((r.verified, r.failed, r.recycled), (1, 2, 0));
+    assert!(r.items[1].error.is_some() && r.items[2].error.is_some());
+    assert!(p.join("hijo/x.txt").exists() && p.join("y.txt").exists(), "nothing is removed without the option");
+}
