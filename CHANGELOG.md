@@ -46,6 +46,9 @@ Fixes from testing on real drives (5.4 M files, 4.4 TB).
   badges; app/tool folders (`.name`, node_modules, XboxGames, steamapps,
   caches), empty folders, tiny undated folders and impossible years (e.g.
   "2072") are no longer listed as backups.
+- Backups → Organize: the preview appears at once (it uses the index counts;
+  before it walked every file and seemed to do nothing for minutes) and scrolls
+  into view; moving still counts the files and verifies the destination.
 
 ## [0.1.0] — unreleased
 

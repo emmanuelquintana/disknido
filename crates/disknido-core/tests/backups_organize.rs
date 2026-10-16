@@ -32,7 +32,9 @@ fn request(d: &Path, items: Vec<PlanInput>) -> PlanRequest {
 }
 
 fn inputs(list: &[backups::BackupItem]) -> Vec<PlanInput> {
-    list.iter().map(|b| PlanInput { path: PathBuf::from(&b.path), year: b.year, month: b.month, no_date: false }).collect()
+    list.iter()
+        .map(|b| PlanInput { path: PathBuf::from(&b.path), year: b.year, month: b.month, no_date: false, indexed: None })
+        .collect()
 }
 
 #[test]
@@ -119,7 +121,7 @@ fn destination_inside_source_is_refused() {
     let src = d.join("Backup Enero 2025");
     let vol = d.to_string_lossy()[..2].to_string();
     let req = PlanRequest {
-        items: vec![PlanInput { path: src.clone(), year: Some(2025), month: Some(1), no_date: false }],
+        items: vec![PlanInput { path: src.clone(), year: Some(2025), month: Some(1), no_date: false, indexed: None }],
         root_name: "Backups".into(),
         parents: HashMap::from([(vol, src.clone())]),
         layout: Layout::YearMonth,
@@ -134,8 +136,10 @@ fn content_change_after_preview_aborts_item() {
     let tmp = fixture_root();
     let d = tmp.path().join("data");
     write(&d.join("x/Backup Junio 2024/a.txt"), b"a");
-    let req =
-        request(&d, vec![PlanInput { path: d.join("x/Backup Junio 2024"), year: Some(2024), month: Some(6), no_date: false }]);
+    let req = request(
+        &d,
+        vec![PlanInput { path: d.join("x/Backup Junio 2024"), year: Some(2024), month: Some(6), no_date: false, indexed: None }],
+    );
     let plan = organize::plan(&req, &Control::default()).unwrap();
     write(&d.join("x/Backup Junio 2024/new.txt"), b"added after preview");
     let conn = db::open(&db(tmp.path())).unwrap();
@@ -161,4 +165,27 @@ fn interrupted_moves_are_reconciled_from_disk() {
     assert_eq!(items[0].status, "done");
     assert_eq!(items[1].status, "failed");
     assert_eq!(ops::history(&conn, 1).unwrap()[0].status, "interrupted");
+}
+
+#[test]
+fn preview_from_index_counts_moves_and_verifies() {
+    let tmp = fixture_root();
+    let d = tmp.path().join("data");
+    write(&d.join("x/Backup Junio 2024/a.txt"), b"a");
+    write(&d.join("x/Backup Junio 2024/sub/b.txt"), b"bb");
+    // Stale index counts: the preview shows them, the move measures the folder itself.
+    let input = PlanInput {
+        path: d.join("x/Backup Junio 2024"),
+        year: Some(2024),
+        month: Some(6),
+        no_date: false,
+        indexed: Some((1, 1)),
+    };
+    let plan = organize::plan(&request(&d, vec![input]), &Control::default()).unwrap();
+    assert_eq!((plan.items[0].files, plan.items[0].bytes, plan.items[0].from_index), (1, 1, true));
+    let conn = db::open(&db(tmp.path())).unwrap();
+    let res = organize::execute(&conn, &plan.items, &Control::default(), &|_, _| {}).unwrap();
+    assert_eq!((res.done, res.failed), (1, 0));
+    let dst = Path::new(&plan.items[0].dst);
+    assert!(dst.join("a.txt").exists() && dst.join("sub/b.txt").exists());
 }

@@ -240,6 +240,8 @@ export interface PlanInput {
   year: number | null;
   month: number | null;
   noDate: boolean;
+  /** [files, bytes] from the index: the preview does not walk the folder. */
+  indexed?: [number, number];
 }
 
 export type PlanStatus = "ready" | "renamed" | "alreadyOrganized" | "needsDate" | "refused";

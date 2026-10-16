@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { Archive, ArrowRight, ShieldCheck } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errorText } from "../api";
 import { Badge, ConfirmDialog, EmptyState, Meter, Notice, PageHeader, PathActions, PathText, Stat, useAsync, type Tone } from "../components/ui";
 import { baseName, formatBytes, formatDate, formatNumber, formatPercent, monthName } from "../format";
@@ -265,6 +265,8 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
   const lang = useLang();
   const { settings, updateSettings, trackTask, latest, toast, navigate } = useApp();
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const planRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   const task = latest("organize");
@@ -272,13 +274,19 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
   const result = task?.done?.ok ? (task.done.result as ExecResult) : null;
   const vols = Array.from(new Set(items.filter((i) => selected.has(i.path)).map((i) => i.volume))).sort();
 
+  // Bring the preview into view: it renders below the options.
+  useEffect(() => {
+    if (plan) planRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [plan]);
+
   const preview = async () => {
     setError(null);
+    setPlanning(true);
     try {
       const chosen = items.filter((i) => selected.has(i.path));
       setPlan(
         await api.organizePlan({
-          items: chosen.map((i) => ({ path: i.path, year: i.noDate ? null : i.year, month: i.noDate ? null : i.month, noDate: i.noDate })),
+          items: chosen.map((i) => ({ path: i.path, year: i.noDate ? null : i.year, month: i.noDate ? null : i.month, noDate: i.noDate, indexed: [i.fileCount, i.size] })),
           rootName: settings.rootName,
           parents: settings.backupParents,
           layout: settings.layout,
@@ -286,6 +294,8 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
       );
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setPlanning(false);
     }
   };
   const execute = async () => {
@@ -348,15 +358,15 @@ function Organize({ items, selected, onDone }: { items: BackupItem[]; selected: 
               </div>
             </div>
           ))}
-          <button className="btn btn-primary" disabled={selected.size === 0 || running} onClick={preview}>
-            {t("backups.makePlan")} ({selected.size})
+          <button className="btn btn-primary" disabled={selected.size === 0 || running || planning} onClick={preview} aria-busy={planning}>
+            {planning ? t("backups.planning") : `${t("backups.makePlan")} (${selected.size})`}
           </button>
         </div>
         {error && <Notice tone="danger">{error}</Notice>}
       </div>
 
       {plan && (
-        <div className="card stack">
+        <div className="card stack" ref={planRef}>
           <div className="row-between">
             <h2 className="section-title" style={{ margin: 0 }}>
               {t("backups.planTitle")}

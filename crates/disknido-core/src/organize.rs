@@ -22,6 +22,11 @@ pub struct PlanInput {
     /// User chose "Sin fecha": goes to `<root>\Sin fecha\`.
     #[serde(default)]
     pub no_date: bool,
+    /// File count and size from the index. When given, the preview uses them
+    /// instead of walking the folder (a large backup on an HDD takes minutes);
+    /// moving still counts every file before and after.
+    #[serde(default)]
+    pub indexed: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -69,6 +74,11 @@ pub struct PlanItem {
     pub bytes: u64,
     pub status: ItemStatus,
     pub message: Option<String>,
+    /// `files`/`bytes` come from the index, not from walking the folder.
+    /// Moving then counts the folder itself and verifies the destination
+    /// against that count.
+    #[serde(default)]
+    pub from_index: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -159,6 +169,7 @@ pub fn plan(req: &PlanRequest, control: &Control) -> Result<Plan> {
             bytes: 0,
             status: ItemStatus::Ready,
             message: None,
+            from_index: false,
         };
         let refuse = |it: &mut PlanItem, msg: String| {
             it.status = ItemStatus::Refused;
@@ -239,6 +250,14 @@ pub fn plan(req: &PlanRequest, control: &Control) -> Result<Plan> {
             ));
         }
         taken.insert(safety::path_key(&dst));
+        if let Some((f, b)) = input.indexed {
+            it.files = f;
+            it.bytes = b;
+            it.from_index = true;
+            it.dst = dst.to_string_lossy().into_owned();
+            items.push(it);
+            continue;
+        }
         match fsx::collect_tree(src, control) {
             Ok(tree) => {
                 let (f, b) = fsx::tree_totals(&tree);
@@ -331,7 +350,7 @@ fn move_one(it: &PlanItem, control: &Control) -> Result<()> {
     }
     safety::check_no_links(dst)?;
     let before = fsx::tree_totals(&fsx::collect_tree(src, control)?);
-    if before != (it.files, it.bytes) {
+    if !it.from_index && before != (it.files, it.bytes) {
         return Err(Error::Refused("El contenido cambió desde la vista previa; vuelve a generar el plan".into()));
     }
     std::fs::create_dir_all(dst.parent().unwrap())?;

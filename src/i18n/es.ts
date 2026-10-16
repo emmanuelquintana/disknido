@@ -316,6 +316,7 @@ export const es = {
   "backups.none": "No se detectaron respaldos en el índice.",
   "backups.selectForPlan": "Incluir en el plan",
   "backups.makePlan": "Previsualizar organización",
+  "backups.planning": "Preparando vista previa…",
   "backups.planTitle": "Vista previa del plan",
   "backups.planNote": "Cada respaldo se mueve dentro de su propia unidad. No se combina, no se sobrescribe y el contenido no cambia.",
   "backups.rootFolder": "Carpeta de respaldos",

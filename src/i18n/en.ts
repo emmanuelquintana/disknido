@@ -316,6 +316,7 @@ export const en: Record<Key, string> = {
   "backups.none": "No backups were detected in the index.",
   "backups.selectForPlan": "Include in plan",
   "backups.makePlan": "Preview organization",
+  "backups.planning": "Preparing preview…",
   "backups.planTitle": "Plan preview",
   "backups.planNote": "Each backup moves within its own drive. Nothing is merged or overwritten, and contents do not change.",
   "backups.rootFolder": "Backups folder",
